@@ -8,7 +8,7 @@ AI-powered Spec-Driven Development IDE for macOS and Linux.
 
 ## Overview
 
-SpecStudio is a native desktop IDE designed for **Spec-Driven Development** — write specifications first, then let AI generate the implementation. It combines Google Gemini for intelligent chat and validation with Claude Code CLI for code generation, all within a polished Electron-based interface.
+SpecStudio is a native desktop IDE designed for **Spec-Driven Development** — write specifications first, then let AI generate the implementation. It combines Google Gemini for intelligent chat and validation with Claude Code CLI for code generation, all within a polished Tauri-based interface.
 
 ### Key Features
 
@@ -17,8 +17,9 @@ SpecStudio is a native desktop IDE designed for **Spec-Driven Development** — 
 - **ADR Context** — Load Architecture Decision Records to guide AI responses
 - **Gemini Chat** — Context-aware AI assistant for discussing your specs
 - **Claude Code Generation** — Generate production code and tests from specs
-- **Streaming Output** — Real-time console output with clean formatting (ANSI codes stripped)
-- **Persistent Settings** — GCP Project ID and preferences stored locally via electron-store
+- **Streaming Output** — Real-time console output with clean formatting
+- **Browser-Based Auth** — One-click login with Google and Anthropic
+- **Persistent Settings** — Preferences stored locally via tauri-plugin-store
 - **Interactive Tour** — Guided onboarding for new users
 - **Manual Git Control** — You decide when to commit (no auto-commits)
 
@@ -26,21 +27,21 @@ SpecStudio is a native desktop IDE designed for **Spec-Driven Development** — 
 
 | Layer | Technology |
 |-------|------------|
-| **Desktop** | Electron 40 |
-| **Framework** | Next.js 16 (App Router + Turbopack) |
-| **Language** | TypeScript (Strict mode) |
+| **Desktop** | Tauri 2 (Rust backend) |
+| **Framework** | Next.js 16 (Static Export) |
+| **Package Manager** | Bun |
+| **Language** | TypeScript + Rust |
 | **UI** | React 19 + Tailwind CSS 4 + shadcn/ui |
-| **AI Chat** | Google Gemini 1.5 Pro (via Vertex AI) |
+| **AI Chat** | Google Gemini 1.5 (via Vertex AI) |
 | **AI Code Gen** | Claude Code CLI |
-| **Storage** | electron-store (persistent settings) |
-| **Git** | simple-git (manual control) |
+| **Storage** | tauri-plugin-store |
 
 ## Getting Started
 
 ### Prerequisites
 
-1. **Node.js** v18 or higher
-2. **Google Cloud CLI** (`gcloud`) — [Install guide](https://cloud.google.com/sdk/docs/install)
+1. **Bun** — [Install guide](https://bun.sh/docs/installation)
+2. **Rust** — [Install guide](https://rustup.rs/)
 3. **Claude Code CLI** — [Install guide](https://docs.anthropic.com/claude-code)
 
 ### Installation
@@ -51,78 +52,92 @@ git clone https://github.com/yourusername/specstudio.git
 cd specstudio
 
 # Install dependencies
-npm install --legacy-peer-deps
+bun install
 ```
 
-### Configuration
+### OAuth Setup (Required for Distribution)
 
-**Option 1: In-App Settings (Recommended for Desktop)**
+SpecStudio uses browser-based OAuth for authentication. Users simply click "Login with Google" or "Login with Anthropic" and authenticate through their browser.
 
-On first launch, SpecStudio will prompt you to configure your Google Cloud Project ID via the Settings dialog. Click the gear icon in the top-right corner to access settings at any time.
+To enable this, you need to create OAuth applications and set the credentials at **build time**:
 
-**Option 2: Environment Variables (Web Mode)**
+#### 1. Google OAuth Setup
 
-For development in web mode, create an environment file:
+1. Go to [Google Cloud Console](https://console.cloud.google.com/)
+2. Create a new project or select existing
+3. Navigate to **APIs & Services → Credentials**
+4. Click **Create Credentials → OAuth client ID**
+5. Select **Desktop app** as application type
+6. Note the **Client ID** and **Client Secret**
+
+#### 2. Anthropic OAuth Setup
+
+1. Go to [Anthropic Console](https://console.anthropic.com/)
+2. Navigate to developer/OAuth settings
+3. Create a new OAuth application
+4. Set redirect URI to `http://127.0.0.1:23847`
+5. Note the **Client ID** and **Client Secret**
+
+#### 3. Build with Credentials
 
 ```bash
-cp .env.local.example .env.local
+# Set environment variables before building
+export GOOGLE_CLIENT_ID="your-google-client-id.apps.googleusercontent.com"
+export GOOGLE_CLIENT_SECRET="your-google-client-secret"
+export ANTHROPIC_CLIENT_ID="your-anthropic-client-id"
+export ANTHROPIC_CLIENT_SECRET="your-anthropic-client-secret"
+
+# Build the app
+bun tauri:build
 ```
 
-Edit `.env.local` and set your Google Cloud Project ID:
-
-```env
-NEXT_PUBLIC_GCP_PROJECT_ID=your-gcp-project-id
-```
-
-### Authentication
-
-SpecStudio uses local application-default credentials — no API keys stored in the app.
-
+For development without OAuth (auth will show error messages):
 ```bash
-# 1. Authenticate with Google Cloud
-gcloud auth application-default login
-
-# 2. Authenticate with Anthropic (Claude)
-claude login
+bun tauri:dev
 ```
 
 ## Running SpecStudio
 
-### Desktop App (Electron)
+### Development
 
 ```bash
-# Development mode
-npm run dev:electron
+# Start Tauri dev server (hot reload)
+bun tauri:dev
+```
 
+### Production Build
+
+```bash
 # Build for your platform
-npm run build:electron
-
-# Build for specific platforms
-npm run build:electron:mac    # macOS (.dmg)
-npm run build:electron:linux  # Linux (.AppImage, .deb)
+GOOGLE_CLIENT_ID=xxx GOOGLE_CLIENT_SECRET=xxx \
+ANTHROPIC_CLIENT_ID=xxx ANTHROPIC_CLIENT_SECRET=xxx \
+bun tauri:build
 ```
 
-### Web Mode (Development Only)
-
-```bash
-npm run dev
-```
-
-Open [http://localhost:3000](http://localhost:3000) in your browser.
+Build outputs are in `src-tauri/target/release/bundle/`.
 
 ## Usage
 
-### 1. Configure Settings
+### 1. Authenticate
 
-On first launch in the desktop app, the Settings dialog will open automatically if your GCP Project ID is not configured. Enter your Google Cloud Project ID to enable Gemini chat features. You can access settings anytime by clicking the gear icon (⚙️) in the top-right corner.
+On first launch, click **"Login with Google"** or **"Login with Anthropic"**:
+- Your browser opens to the OAuth consent screen
+- Sign in with your existing account
+- Authorize SpecStudio
+- You'll see "Authentication Successful!" — close the browser tab
+- You're now logged in!
 
-### 2. Select a Workspace
+### 2. Configure Settings
+
+Click the gear icon (⚙️) in the top-right corner and enter your **Google Cloud Project ID**. This is required for Gemini chat features.
+
+### 3. Select a Workspace
 
 On the welcome screen, click **"Connect Your First Workspace"** and either:
 - Type a path manually, or
-- Click the folder icon to use the native file picker (Electron only)
+- Click the folder icon to use the native file picker
 
-### 3. Write Your Spec
+### 4. Write Your Spec
 
 The left panel contains a markdown editor. Write your feature specification:
 
@@ -144,11 +159,11 @@ Implement JWT-based authentication with refresh tokens.
 - [ ] Refresh tokens last 7 days
 ```
 
-### 4. Load ADR Context (Optional)
+### 5. Load ADR Context (Optional)
 
 Click an Architecture Decision Record in the left sidebar to provide context for AI operations. ADRs are loaded from `docs/adr/` in your workspace.
 
-### 5. Use AI Actions
+### 6. Use AI Actions
 
 The control bar provides these actions:
 
@@ -160,7 +175,7 @@ The control bar provides these actions:
 | **Run Tests** | Executes `npm test` in your workspace |
 | **Run App** | Starts `npm run dev` in your workspace |
 
-### 6. Chat with Gemini
+### 7. Chat with Gemini
 
 Use the chat panel to discuss your spec, ask questions, or refine requirements. The selected ADR provides context for all conversations.
 
@@ -168,19 +183,21 @@ Use the chat panel to discuss your spec, ask questions, or refine requirements. 
 
 ```
 specstudio/
-├── electron/
-│   ├── main.js           # Electron main process & IPC handlers
-│   └── preload.js        # Context bridge (window.electron API)
+├── src-tauri/
+│   ├── src/
+│   │   ├── lib.rs        # Tauri app entry, plugin registration
+│   │   ├── auth.rs       # OAuth flow (Google + Anthropic)
+│   │   ├── gemini.rs     # Gemini API with streaming
+│   │   ├── shell.rs      # Process spawning & streaming output
+│   │   └── workspace.rs  # Workspace file I/O
+│   ├── capabilities/     # Tauri permissions
+│   ├── Cargo.toml
+│   └── tauri.conf.json
 ├── src/
 │   ├── app/
-│   │   ├── api/          # Next.js API routes (web mode only)
-│   │   │   ├── auth/     # Authentication endpoints
-│   │   │   ├── rpc/      # RPC + streaming endpoints
-│   │   │   └── workspace/# Workspace validation & file I/O
 │   │   ├── layout.tsx
 │   │   └── page.tsx
 │   ├── components/
-│   │   ├── auth/         # Auth splash screen
 │   │   ├── ide/          # Main IDE components
 │   │   │   ├── adr-sidebar.tsx
 │   │   │   ├── control-bar.tsx
@@ -191,62 +208,51 @@ specstudio/
 │   │   ├── ui/           # shadcn/ui components
 │   │   └── workspace/    # Editor, chat, workspace splash
 │   ├── hooks/
-│   │   ├── use-auth.ts           # Auth state management
+│   │   ├── use-auth.ts           # Auth state (OAuth)
 │   │   ├── use-rpc.ts            # RPC & streaming hooks
 │   │   ├── use-workspace.ts      # Workspace file operations
-│   │   └── use-workspace-target.ts # Multi-workspace management
-│   ├── lib/
-│   │   └── services/     # Backend services (Gemini, Claude, Shell)
-│   └── types/            # TypeScript definitions
-├── build/                # Electron builder resources
+│   │   └── use-workspace-target.ts
+│   └── types/
+├── out/                  # Next.js static export
 └── package.json
 ```
 
 ## Architecture
 
-### Electron Mode
 ```
-┌─────────────────────────────────────────────────────┐
-│                  Electron Main Process              │
-│  ┌───────────────────────────────────────────────┐  │
-│  │  IPC Handlers (auth, workspace, rpc, settings)│  │
-│  │  ├── Gemini/Vertex AI calls                   │  │
-│  │  ├── Claude CLI spawning                      │  │
-│  │  ├── Filesystem operations                    │  │
-│  │  └── electron-store (persistent settings)     │  │
-│  └───────────────────────────────────────────────┘  │
-│                        ▲                            │
-│                        │ IPC                        │
-│                        ▼                            │
-│  ┌───────────────────────────────────────────────┐  │
-│  │           Renderer (React/Next.js)            │  │
-│  │  window.electron.* API via preload.js         │  │
-│  └───────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────┘
-```
-
-### Web Mode (Development)
-```
-┌─────────────────┐      ┌─────────────────────────┐
-│  Browser/React  │ ──── │  Next.js API Routes     │
-│  fetch('/api/*')│      │  ├── /api/auth          │
-└─────────────────┘      │  ├── /api/rpc           │
-                         │  ├── /api/rpc/stream    │
-                         │  └── /api/workspace     │
-                         └─────────────────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│                     Tauri (Rust Backend)                     │
+│  ┌────────────────────────────────────────────────────────┐  │
+│  │  Commands (invoke handlers)                            │  │
+│  │  ├── auth.rs      → OAuth flow, token management       │  │
+│  │  ├── gemini.rs    → Gemini API streaming               │  │
+│  │  ├── shell.rs     → Claude CLI, npm processes          │  │
+│  │  └── workspace.rs → File I/O, ADR parsing              │  │
+│  ├────────────────────────────────────────────────────────┤  │
+│  │  Plugins                                               │  │
+│  │  ├── tauri-plugin-store  → Persistent settings         │  │
+│  │  ├── tauri-plugin-shell  → Process spawning            │  │
+│  │  └── tauri-plugin-dialog → Native file picker          │  │
+│  └────────────────────────────────────────────────────────┘  │
+│                            ▲                                  │
+│                            │ IPC (invoke/listen)              │
+│                            ▼                                  │
+│  ┌────────────────────────────────────────────────────────┐  │
+│  │              WebView (React/Next.js SSG)               │  │
+│  │  @tauri-apps/api → invoke(), listen()                  │  │
+│  └────────────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────────┘
 ```
 
 ## Scripts
 
 | Script | Description |
 |--------|-------------|
-| `npm run dev` | Start Next.js dev server (web mode) |
-| `npm run dev:electron` | Start Electron + Next.js dev server |
-| `npm run build` | Build Next.js for production |
-| `npm run build:electron` | Build Electron app for current platform |
-| `npm run build:electron:mac` | Build macOS .dmg |
-| `npm run build:electron:linux` | Build Linux .AppImage and .deb |
-| `npm run lint` | Run ESLint |
+| `bun dev` | Start Next.js dev server (frontend only) |
+| `bun build` | Build Next.js static export |
+| `bun tauri:dev` | Start Tauri + Next.js dev server |
+| `bun tauri:build` | Build Tauri app for current platform |
+| `bun lint` | Run ESLint |
 
 ## ADR Format
 
@@ -289,25 +295,36 @@ git push
 
 ## Troubleshooting
 
-### Linux Sandbox Error
-If you see a sandbox error on Linux:
-```
-The SUID sandbox helper binary was found, but is not configured correctly.
-```
+### OAuth "Not Configured" Error
 
-The dev script includes `--no-sandbox` for development. For production, either:
-1. Set up the Chrome sandbox properly, or
-2. Run with `--no-sandbox` flag
+If you see "Google OAuth not configured" or similar:
+- OAuth credentials must be set at **build time** via environment variables
+- For development, auth features won't work without credentials
+- See [OAuth Setup](#oauth-setup-required-for-distribution) above
 
-### PATH Not Found (Claude/gcloud commands fail)
-SpecStudio uses `fix-path` to inherit your terminal's PATH. If commands still fail:
-1. Ensure `claude` and `gcloud` are in your PATH
-2. Try launching from terminal: `npm run dev:electron`
+### Claude CLI Not Found
 
-### React 19 Peer Dependency Warnings
-Use `--legacy-peer-deps` when installing:
+Ensure Claude Code CLI is installed and in your PATH:
 ```bash
-npm install --legacy-peer-deps
+# Verify installation
+claude --version
+
+# If not found, install it
+# See: https://docs.anthropic.com/claude-code
+```
+
+### Gemini Chat Not Working
+
+1. Ensure you're authenticated with Google (click "Login with Google")
+2. Verify your GCP Project ID is set in Settings
+3. Check that Vertex AI API is enabled in your GCP project
+
+### Linux Build Issues
+
+Install required system dependencies:
+```bash
+# Ubuntu/Debian
+sudo apt install libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
 ```
 
 ## Contributing
@@ -324,4 +341,4 @@ MIT License — see [LICENSE](LICENSE) for details.
 
 ---
 
-Built with Gemini, Claude, and Electron.
+Built with Gemini, Claude, Tauri, and Rust.

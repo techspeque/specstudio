@@ -2,7 +2,8 @@
 
 // ============================================================================
 // Settings Dialog
-// Configure IDE settings like GCP Project ID
+// Configure IDE settings like GCP Project ID and Region
+// Uses tauri-plugin-store for persistent storage
 // ============================================================================
 
 import { useState, useEffect, useCallback } from 'react';
@@ -15,7 +16,67 @@ import {
 } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 import { Settings, Loader2, CheckCircle, AlertCircle } from 'lucide-react';
+import { load } from '@tauri-apps/plugin-store';
+
+const STORE_FILE = 'settings.json';
+
+// Common GCP regions for Vertex AI
+const GCP_REGIONS = [
+  { value: 'us-central1', label: 'US Central (Iowa)' },
+  { value: 'us-east1', label: 'US East (South Carolina)' },
+  { value: 'us-east4', label: 'US East (Virginia)' },
+  { value: 'us-west1', label: 'US West (Oregon)' },
+  { value: 'us-west4', label: 'US West (Las Vegas)' },
+  { value: 'europe-west1', label: 'Europe West (Belgium)' },
+  { value: 'europe-west2', label: 'Europe West (London)' },
+  { value: 'europe-west3', label: 'Europe West (Frankfurt)' },
+  { value: 'europe-west4', label: 'Europe West (Netherlands)' },
+  { value: 'asia-east1', label: 'Asia East (Taiwan)' },
+  { value: 'asia-northeast1', label: 'Asia Northeast (Tokyo)' },
+  { value: 'asia-northeast3', label: 'Asia Northeast (Seoul)' },
+  { value: 'asia-south1', label: 'Asia South (Mumbai)' },
+  { value: 'asia-southeast1', label: 'Asia Southeast (Singapore)' },
+  { value: 'australia-southeast1', label: 'Australia (Sydney)' },
+];
+
+interface SettingsData {
+  gcpProjectId: string;
+  gcpRegion: string;
+}
+
+const DEFAULT_REGION = 'us-central1';
+
+const STORE_OPTIONS = {
+  defaults: { gcpProjectId: '', gcpRegion: DEFAULT_REGION } as Record<string, unknown>,
+  autoSave: true,
+};
+
+async function loadSettingsFromStore(): Promise<SettingsData> {
+  try {
+    const store = await load(STORE_FILE, STORE_OPTIONS);
+    return {
+      gcpProjectId: (await store.get<string>('gcpProjectId')) || '',
+      gcpRegion: (await store.get<string>('gcpRegion')) || DEFAULT_REGION,
+    };
+  } catch {
+    return { gcpProjectId: '', gcpRegion: DEFAULT_REGION };
+  }
+}
+
+async function saveSettingsToStore(settings: SettingsData): Promise<void> {
+  const store = await load(STORE_FILE, STORE_OPTIONS);
+  await store.set('gcpProjectId', settings.gcpProjectId);
+  await store.set('gcpRegion', settings.gcpRegion);
+  await store.save();
+}
 
 interface SettingsDialogProps {
   open: boolean;
@@ -29,6 +90,7 @@ export function SettingsDialog({
   onSettingsSaved,
 }: SettingsDialogProps) {
   const [gcpProjectId, setGcpProjectId] = useState('');
+  const [gcpRegion, setGcpRegion] = useState(DEFAULT_REGION);
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -46,10 +108,9 @@ export function SettingsDialog({
     setError(null);
 
     try {
-      if (window.electron?.settings) {
-        const value = await window.electron.settings.get('gcpProjectId');
-        setGcpProjectId(value ?? '');
-      }
+      const settings = await loadSettingsFromStore();
+      setGcpProjectId(settings.gcpProjectId);
+      setGcpRegion(settings.gcpRegion);
     } catch (err) {
       setError('Failed to load settings');
       console.error('Failed to load settings:', err);
@@ -59,36 +120,28 @@ export function SettingsDialog({
   };
 
   const handleSave = useCallback(async () => {
-    if (!window.electron?.settings) {
-      setError('Settings not available in web mode');
-      return;
-    }
-
     setIsSaving(true);
     setError(null);
     setSaveSuccess(false);
 
     try {
-      const result = await window.electron.settings.set('gcpProjectId', gcpProjectId.trim());
-      if (result.success) {
-        setSaveSuccess(true);
-        onSettingsSaved?.();
-        // Auto-close after successful save
-        setTimeout(() => {
-          onOpenChange(false);
-          setSaveSuccess(false);
-        }, 1000);
-      } else {
-        setError(result.error ?? 'Failed to save settings');
-      }
+      await saveSettingsToStore({
+        gcpProjectId: gcpProjectId.trim(),
+        gcpRegion,
+      });
+      setSaveSuccess(true);
+      onSettingsSaved?.();
+      // Auto-close after successful save
+      setTimeout(() => {
+        onOpenChange(false);
+        setSaveSuccess(false);
+      }, 1000);
     } catch (err) {
       setError((err as Error).message);
     } finally {
       setIsSaving(false);
     }
-  }, [gcpProjectId, onOpenChange, onSettingsSaved]);
-
-  const isElectronEnv = typeof window !== 'undefined' && window.electron?.platform?.isElectron === true;
+  }, [gcpProjectId, gcpRegion, onOpenChange, onSettingsSaved]);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -103,15 +156,7 @@ export function SettingsDialog({
           </DialogDescription>
         </DialogHeader>
 
-        {!isElectronEnv ? (
-          <div className="flex items-start gap-2 p-3 rounded-md bg-yellow-950/50 border border-yellow-900">
-            <AlertCircle className="h-4 w-4 text-yellow-400 mt-0.5 shrink-0" />
-            <p className="text-sm text-yellow-400">
-              Settings persistence is only available in the desktop app.
-              Use environment variables in web mode.
-            </p>
-          </div>
-        ) : isLoading ? (
+        {isLoading ? (
           <div className="flex items-center justify-center py-8">
             <Loader2 className="h-6 w-6 animate-spin text-zinc-500" />
           </div>
@@ -133,6 +178,32 @@ export function SettingsDialog({
               />
               <p className="text-xs text-zinc-500">
                 Required for Gemini chat. Find your project ID in the Google Cloud Console.
+              </p>
+            </div>
+
+            {/* GCP Region */}
+            <div className="space-y-2">
+              <label htmlFor="gcpRegion" className="text-sm font-medium text-zinc-300">
+                Vertex AI Region
+              </label>
+              <Select value={gcpRegion} onValueChange={setGcpRegion} disabled={isSaving}>
+                <SelectTrigger className="bg-zinc-950 border-zinc-700 text-zinc-200">
+                  <SelectValue placeholder="Select a region" />
+                </SelectTrigger>
+                <SelectContent className="bg-zinc-900 border-zinc-700">
+                  {GCP_REGIONS.map((region) => (
+                    <SelectItem
+                      key={region.value}
+                      value={region.value}
+                      className="text-zinc-200 focus:bg-zinc-800"
+                    >
+                      {region.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-zinc-500">
+                Choose a region close to you for lower latency.
               </p>
             </div>
 
@@ -192,13 +263,8 @@ export function useSettingsCheck() {
   const checkSettings = useCallback(async () => {
     setIsChecking(true);
     try {
-      if (window.electron?.settings) {
-        const gcpProjectId = await window.electron.settings.get('gcpProjectId');
-        setIsConfigured(!!gcpProjectId && gcpProjectId.trim() !== '');
-      } else {
-        // In web mode, assume configured (uses env vars)
-        setIsConfigured(true);
-      }
+      const settings = await loadSettingsFromStore();
+      setIsConfigured(!!settings.gcpProjectId && settings.gcpProjectId.trim() !== '');
     } catch {
       setIsConfigured(false);
     } finally {
@@ -212,3 +278,7 @@ export function useSettingsCheck() {
 
   return { isConfigured, isChecking, recheckSettings: checkSettings };
 }
+
+// Export for use in other components
+export { loadSettingsFromStore };
+export type { SettingsData };

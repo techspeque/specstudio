@@ -3,11 +3,22 @@
 // ============================================================================
 // Workspace Hook
 // Manages ADRs, spec content, and console output
-// Uses Electron IPC when available, falls back to fetch for web/dev mode
+// Uses Tauri IPC via invoke()
 // ============================================================================
 
 import { useState, useCallback, useEffect, useRef } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 import { ADR, StreamEvent } from '@/types';
+
+interface WorkspaceData {
+  specContent: string;
+  adrs: ADR[];
+  workingDirectory: string;
+}
+
+interface SaveResult {
+  success: boolean;
+}
 
 interface UseWorkspaceReturn {
   adrs: ADR[];
@@ -26,13 +37,6 @@ interface UseWorkspaceReturn {
   refreshWorkspace: () => Promise<void>;
 }
 
-/**
- * Check if running in Electron environment
- */
-function isElectron(): boolean {
-  return typeof window !== 'undefined' && window.electron?.platform?.isElectron === true;
-}
-
 export function useWorkspace(targetWorkspace: string | null): UseWorkspaceReturn {
   const [adrs, setAdrs] = useState<ADR[]>([]);
   const [selectedAdr, setSelectedAdr] = useState<ADR | null>(null);
@@ -48,7 +52,7 @@ export function useWorkspace(targetWorkspace: string | null): UseWorkspaceReturn
   const saveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   /**
-   * Fetch workspace data (spec.md and ADRs) from the API or IPC
+   * Fetch workspace data (spec.md and ADRs) via Tauri invoke
    */
   const refreshWorkspace = useCallback(async () => {
     // No workspace selected - skip loading
@@ -61,35 +65,23 @@ export function useWorkspace(targetWorkspace: string | null): UseWorkspaceReturn
       setIsLoading(true);
       setError(null);
 
-      let data: { specContent: string; adrs: ADR[]; workingDirectory: string };
-
-      if (isElectron()) {
-        // Use Electron IPC
-        data = await window.electron!.workspace.read(targetWorkspace);
-      } else {
-        // Fall back to fetch for web/dev mode
-        const params = `?cwd=${encodeURIComponent(targetWorkspace)}`;
-        const response = await fetch(`/api/workspace${params}`);
-        if (!response.ok) {
-          const errorData = await response.json();
-          throw new Error(errorData.error || 'Failed to load workspace');
-        }
-        data = await response.json();
-      }
+      const data = await invoke<WorkspaceData>('read_workspace', {
+        workingDirectory: targetWorkspace,
+      });
 
       setSpecContentState(data.specContent);
       setAdrs(data.adrs);
       setWorkingDirectory(data.workingDirectory);
       specModifiedRef.current = false;
     } catch (err) {
-      setError((err as Error).message);
+      setError(err as string);
     } finally {
       setIsLoading(false);
     }
   }, [targetWorkspace]);
 
   /**
-   * Save spec content to the filesystem
+   * Save spec content to the filesystem via Tauri invoke
    */
   const saveSpec = useCallback(async () => {
     if (!specModifiedRef.current || !targetWorkspace) return;
@@ -98,32 +90,14 @@ export function useWorkspace(targetWorkspace: string | null): UseWorkspaceReturn
       setIsSaving(true);
       setError(null);
 
-      if (isElectron()) {
-        // Use Electron IPC
-        await window.electron!.workspace.save({
-          specContent,
-          workingDirectory: workingDirectory || targetWorkspace,
-        });
-      } else {
-        // Fall back to fetch for web/dev mode
-        const response = await fetch('/api/workspace', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            specContent,
-            workingDirectory: workingDirectory || undefined,
-          }),
-        });
-
-        if (!response.ok) {
-          const data = await response.json();
-          throw new Error(data.error || 'Failed to save spec');
-        }
-      }
+      await invoke<SaveResult>('save_workspace', {
+        specContent,
+        workingDirectory: workingDirectory || targetWorkspace,
+      });
 
       specModifiedRef.current = false;
     } catch (err) {
-      setError((err as Error).message);
+      setError(err as string);
     } finally {
       setIsSaving(false);
     }
@@ -148,24 +122,10 @@ export function useWorkspace(targetWorkspace: string | null): UseWorkspaceReturn
     // Auto-save after 2 seconds of inactivity
     saveTimeoutRef.current = setTimeout(async () => {
       try {
-        if (isElectron()) {
-          await window.electron!.workspace.save({
-            specContent: content,
-            workingDirectory: targetWorkspace,
-          });
-        } else {
-          const res = await fetch('/api/workspace', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              specContent: content,
-              workingDirectory: targetWorkspace,
-            }),
-          });
-          if (res.ok) {
-            specModifiedRef.current = false;
-          }
-        }
+        await invoke<SaveResult>('save_workspace', {
+          specContent: content,
+          workingDirectory: targetWorkspace,
+        });
         specModifiedRef.current = false;
       } catch {
         // Silently fail auto-save, user can manually save

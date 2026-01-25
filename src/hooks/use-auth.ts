@@ -3,10 +3,13 @@
 // ============================================================================
 // Auth Hook
 // Manages authentication state for Google and Anthropic
-// Uses Electron IPC when available, falls back to fetch for web/dev mode
+// Uses browser-based OAuth flow via Tauri backend
+// OAuth credentials are bundled at build time - users just click "Login"
 // ============================================================================
 
 import { useState, useEffect, useCallback } from 'react';
+import { invoke } from '@tauri-apps/api/core';
+import { listen, UnlistenFn } from '@tauri-apps/api/event';
 import { AuthStatus, AuthProvider } from '@/types';
 
 interface UseAuthReturn {
@@ -14,15 +17,20 @@ interface UseAuthReturn {
   isLoading: boolean;
   isAuthenticated: boolean;
   login: (provider: AuthProvider) => Promise<void>;
+  logout: (provider: AuthProvider) => Promise<void>;
   checkAuth: () => Promise<void>;
   error: string | null;
 }
 
-/**
- * Check if running in Electron environment
- */
-function isElectron(): boolean {
-  return typeof window !== 'undefined' && window.electron?.platform?.isElectron === true;
+interface AuthEvent {
+  provider: string;
+  status: string;
+  message: string;
+}
+
+interface AuthStatusResponse {
+  google: boolean;
+  anthropic: boolean;
 }
 
 export function useAuth(): UseAuthReturn {
@@ -34,79 +42,115 @@ export function useAuth(): UseAuthReturn {
   const [error, setError] = useState<string | null>(null);
 
   const checkAuth = useCallback(async () => {
+    setIsLoading(true);
+    setError(null);
+
     try {
-      setIsLoading(true);
-      setError(null);
-
-      let data: AuthStatus;
-
-      if (isElectron()) {
-        // Use Electron IPC
-        data = await window.electron!.auth.check();
-      } else {
-        // Fall back to fetch for web/dev mode
-        const response = await fetch('/api/auth');
-        if (!response.ok) {
-          throw new Error('Failed to check auth status');
-        }
-        data = await response.json();
-      }
-
-      setStatus(data);
+      const authStatus = await invoke<AuthStatusResponse>('check_all_auth');
+      setStatus({
+        google: authStatus.google,
+        anthropic: authStatus.anthropic,
+      });
     } catch (err) {
-      setError((err as Error).message);
+      console.error('Failed to check auth status:', err);
+      setError((err as Error).message || 'Failed to check authentication status');
     } finally {
       setIsLoading(false);
     }
   }, []);
 
   const login = useCallback(async (provider: AuthProvider) => {
+    setIsLoading(true);
+    setError(null);
+
     try {
-      setIsLoading(true);
-      setError(null);
+      const command = provider === 'google' ? 'start_google_oauth' : 'start_anthropic_oauth';
+      const result = await invoke<{ success: boolean; message: string }>(command);
 
-      if (isElectron()) {
-        // Use Electron IPC
-        const result = await window.electron!.auth.login(provider);
-        if (!result.success) {
-          throw new Error(result.message);
-        }
+      if (result.success) {
+        setStatus(prev => ({
+          ...prev,
+          [provider]: true,
+        }));
       } else {
-        // Fall back to fetch for web/dev mode
-        const response = await fetch('/api/auth', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ provider }),
-        });
-
-        const data = await response.json();
-
-        if (!data.success) {
-          throw new Error(data.message);
-        }
+        throw new Error(result.message);
       }
-
-      // Refresh auth status after login
-      await checkAuth();
     } catch (err) {
-      setError((err as Error).message);
+      const message = (err as Error).message || 'Authentication failed';
+      setError(message);
       throw err;
     } finally {
       setIsLoading(false);
     }
-  }, [checkAuth]);
+  }, []);
 
+  const logout = useCallback(async (provider: AuthProvider) => {
+    setIsLoading(true);
+    setError(null);
+
+    try {
+      const command = provider === 'google' ? 'logout_google' : 'logout_anthropic';
+      await invoke(command);
+      setStatus(prev => ({
+        ...prev,
+        [provider]: false,
+      }));
+    } catch (err) {
+      setError((err as Error).message || 'Logout failed');
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
+
+  // Listen for auth status events from backend
+  useEffect(() => {
+    let unlisten: UnlistenFn | undefined;
+
+    const setupListener = async () => {
+      unlisten = await listen<AuthEvent>('auth:status', (event) => {
+        const { provider, status: authStatus, message } = event.payload;
+
+        if (authStatus === 'authenticated') {
+          setStatus(prev => ({
+            ...prev,
+            [provider]: true,
+          }));
+          setIsLoading(false);
+        } else if (authStatus === 'logged_out') {
+          setStatus(prev => ({
+            ...prev,
+            [provider]: false,
+          }));
+        } else if (authStatus === 'error') {
+          setError(message);
+          setIsLoading(false);
+        } else if (authStatus === 'pending') {
+          setIsLoading(true);
+        }
+      });
+    };
+
+    setupListener();
+
+    return () => {
+      unlisten?.();
+    };
+  }, []);
+
+  // Check auth status on mount
   useEffect(() => {
     checkAuth();
   }, [checkAuth]);
 
-  const isAuthenticated = status.google && status.anthropic;
+  // User is authenticated if either provider is authenticated
+  const isAuthenticated = status.google || status.anthropic;
 
   return {
     status,
     isLoading,
     isAuthenticated,
     login,
+    logout,
     checkAuth,
     error,
   };

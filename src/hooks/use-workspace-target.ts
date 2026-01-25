@@ -3,10 +3,12 @@
 // ============================================================================
 // Workspace Target Hook
 // Manages multiple workspaces with selection, creation, and persistence
-// Uses Electron IPC when available, falls back to fetch for web/dev mode
+// Uses Tauri IPC via invoke()
 // ============================================================================
 
 import { useState, useCallback, useEffect } from 'react';
+import { invoke } from '@tauri-apps/api/core';
+import { open } from '@tauri-apps/plugin-dialog';
 
 const WORKSPACES_KEY = 'specstudio_workspaces';
 const ACTIVE_WORKSPACE_KEY = 'specstudio_active_workspace';
@@ -16,6 +18,13 @@ export interface Workspace {
   path: string;
   name: string;
   lastAccessed: number;
+}
+
+interface ValidateResult {
+  valid: boolean;
+  path?: string;
+  error?: string;
+  created?: boolean;
 }
 
 interface UseWorkspaceTargetReturn {
@@ -39,15 +48,8 @@ interface UseWorkspaceTargetReturn {
   completeTour: () => void;
   // Loading state
   isInitialized: boolean;
-  // Native folder picker (Electron only)
+  // Native folder picker
   browseForFolder: () => Promise<string | null>;
-}
-
-/**
- * Check if running in Electron environment
- */
-function isElectron(): boolean {
-  return typeof window !== 'undefined' && window.electron?.platform?.isElectron === true;
 }
 
 export function useWorkspaceTarget(): UseWorkspaceTargetReturn {
@@ -128,21 +130,9 @@ export function useWorkspaceTarget(): UseWorkspaceTargetReturn {
     setValidationError(null);
 
     try {
-      let data: { valid: boolean; path?: string; error?: string; created?: boolean };
-
-      if (isElectron()) {
-        // Use Electron IPC
-        data = await window.electron!.workspace.validate(path);
-      } else {
-        // Fall back to fetch for web/dev mode
-        const response = await fetch('/api/workspace/validate', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ path }),
-        });
-
-        data = await response.json();
-      }
+      const data = await invoke<ValidateResult>('validate_workspace', {
+        inputPath: path,
+      });
 
       if (!data.valid) {
         const error = data.error || 'Invalid workspace path';
@@ -186,7 +176,7 @@ export function useWorkspaceTarget(): UseWorkspaceTargetReturn {
 
       return { success: true };
     } catch (error) {
-      const errorMsg = (error as Error).message;
+      const errorMsg = error as string;
       setValidationError(errorMsg);
       return { success: false, error: errorMsg };
     } finally {
@@ -222,18 +212,22 @@ export function useWorkspaceTarget(): UseWorkspaceTargetReturn {
     }
   }, [activeWorkspace]);
 
-  // Browse for folder using native OS dialog (Electron only)
+  // Browse for folder using native OS dialog via Tauri
   const browseForFolder = useCallback(async (): Promise<string | null> => {
-    if (!isElectron()) {
+    try {
+      const selected = await open({
+        directory: true,
+        multiple: false,
+        title: 'Select Workspace Folder',
+      });
+
+      if (selected && typeof selected === 'string') {
+        return selected;
+      }
+      return null;
+    } catch {
       return null;
     }
-
-    const result = await window.electron!.workspace.browse();
-    if (result.canceled || !result.path) {
-      return null;
-    }
-
-    return result.path;
   }, []);
 
   return {

@@ -480,7 +480,8 @@ function WelcomeState({
 }: WelcomeStateProps) {
   const [newPath, setNewPath] = useState('');
   const [showForm, setShowForm] = useState(false);
-  const isElectronEnv = typeof window !== 'undefined' && window.electron?.platform?.isElectron === true;
+  // Always true in Tauri environment
+  const isTauriEnv = true;
 
   const handleBrowse = async () => {
     const selectedPath = await onBrowseFolder();
@@ -591,7 +592,7 @@ function WelcomeState({
                   disabled={isValidating}
                   autoFocus
                 />
-                {isElectronEnv && (
+                {isTauriEnv && (
                   <Button
                     type="button"
                     variant="outline"

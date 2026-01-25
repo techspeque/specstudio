@@ -1,10 +1,10 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  // Note: Using server mode instead of static export to keep API routes
-  // working for web dev mode. Electron uses IPC handlers directly.
+  // Static export for Tauri - all backend logic is in Rust
+  output: "export",
 
-  // Disable image optimization for Electron compatibility
+  // Disable image optimization for static export
   images: {
     unoptimized: true,
   },
