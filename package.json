@@ -34,7 +34,7 @@
     "next": "16.1.4",
     "react": "19.2.3",
     "react-dom": "19.2.3",
-    "react-joyride": "^2.9.3",
+    "@adi-prasetyo/react-joyride": "^2.9.3-adp.1",
     "react-resizable-panels": "^4.5.1",
     "simple-git": "^3.30.0",
     "strip-ansi": "^7.1.2",

@@ -6,7 +6,7 @@
 // ============================================================================
 
 import { useState, useEffect } from 'react';
-import Joyride, { CallBackProps, STATUS, Step, TooltipRenderProps } from 'react-joyride';
+import Joyride, { CallBackProps, STATUS, Step, TooltipRenderProps } from '@adi-prasetyo/react-joyride';
 import { Button } from '@/components/ui/button';
 import { X, ChevronLeft, ChevronRight } from 'lucide-react';
 
