@@ -2,18 +2,22 @@
 
 // ============================================================================
 // Workspace Hook
-// Manages ADRs, spec content, and console output
+// Manages specs, spec content, and console output
 // Uses Tauri IPC via invoke()
 // ============================================================================
 
 import { useState, useCallback, useEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { ADR, StreamEvent } from '@/types';
+import { Spec, StreamEvent } from '@/types';
 
 interface WorkspaceData {
-  specContent: string;
-  adrs: ADR[];
+  specs: Spec[];
   workingDirectory: string;
+}
+
+interface SpecContent {
+  filename: string;
+  content: string;
 }
 
 interface SaveResult {
@@ -21,12 +25,13 @@ interface SaveResult {
 }
 
 interface UseWorkspaceReturn {
-  adrs: ADR[];
-  selectedAdr: ADR | null;
-  selectAdr: (adr: ADR | null) => void;
+  specs: Spec[];
+  selectedSpec: Spec | null;
+  selectSpec: (spec: Spec | null) => void;
   specContent: string;
   setSpecContent: (content: string) => void;
-  saveSpec: () => Promise<void>;
+  saveSpec: (filename: string, content: string) => Promise<void>;
+  deleteSpec: (filename: string) => Promise<void>;
   consoleOutput: StreamEvent[];
   appendConsoleOutput: (event: StreamEvent) => void;
   clearConsole: () => void;
@@ -38,8 +43,8 @@ interface UseWorkspaceReturn {
 }
 
 export function useWorkspace(targetWorkspace: string | null): UseWorkspaceReturn {
-  const [adrs, setAdrs] = useState<ADR[]>([]);
-  const [selectedAdr, setSelectedAdr] = useState<ADR | null>(null);
+  const [specs, setSpecs] = useState<Spec[]>([]);
+  const [selectedSpec, setSelectedSpec] = useState<Spec | null>(null);
   const [specContent, setSpecContentState] = useState<string>('');
   const [consoleOutput, setConsoleOutput] = useState<StreamEvent[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -50,9 +55,10 @@ export function useWorkspace(targetWorkspace: string | null): UseWorkspaceReturn
   // Track if spec has been modified since last save
   const specModifiedRef = useRef(false);
   const saveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const currentFilenameRef = useRef<string | null>(null);
 
   /**
-   * Fetch workspace data (spec.md and ADRs) via Tauri invoke
+   * Fetch workspace data (list of specs) via Tauri invoke
    */
   const refreshWorkspace = useCallback(async () => {
     // No workspace selected - skip loading
@@ -69,10 +75,8 @@ export function useWorkspace(targetWorkspace: string | null): UseWorkspaceReturn
         workingDirectory: targetWorkspace,
       });
 
-      setSpecContentState(data.specContent);
-      setAdrs(data.adrs);
+      setSpecs(data.specs);
       setWorkingDirectory(data.workingDirectory);
-      specModifiedRef.current = false;
     } catch (err) {
       setError(err as string);
     } finally {
@@ -81,38 +85,113 @@ export function useWorkspace(targetWorkspace: string | null): UseWorkspaceReturn
   }, [targetWorkspace]);
 
   /**
-   * Save spec content to the filesystem via Tauri invoke
+   * Select a spec and load its content
    */
-  const saveSpec = useCallback(async () => {
-    if (!specModifiedRef.current || !targetWorkspace) return;
+  const selectSpec = useCallback(async (spec: Spec | null) => {
+    // Clear any pending auto-save
+    if (saveTimeoutRef.current) {
+      clearTimeout(saveTimeoutRef.current);
+    }
+
+    setSelectedSpec(spec);
+    currentFilenameRef.current = spec?.filename ?? null;
+
+    if (!spec || !targetWorkspace) {
+      setSpecContentState('');
+      specModifiedRef.current = false;
+      return;
+    }
+
+    try {
+      setIsLoading(true);
+      const result = await invoke<SpecContent>('read_spec', {
+        filename: spec.filename,
+        workingDirectory: targetWorkspace,
+      });
+      setSpecContentState(result.content);
+      specModifiedRef.current = false;
+    } catch (err) {
+      setError(err as string);
+      setSpecContentState('');
+    } finally {
+      setIsLoading(false);
+    }
+  }, [targetWorkspace]);
+
+  /**
+   * Save a spec file to docs/specs/
+   */
+  const saveSpec = useCallback(async (filename: string, content: string) => {
+    if (!targetWorkspace) {
+      throw new Error('No workspace selected');
+    }
 
     try {
       setIsSaving(true);
       setError(null);
 
-      await invoke<SaveResult>('save_workspace', {
-        specContent,
-        workingDirectory: workingDirectory || targetWorkspace,
+      await invoke<SaveResult>('save_spec', {
+        filename,
+        content,
+        workingDirectory: targetWorkspace,
       });
 
       specModifiedRef.current = false;
+
+      // Refresh workspace to pick up the new/updated spec
+      await refreshWorkspace();
     } catch (err) {
       setError(err as string);
+      throw err;
     } finally {
       setIsSaving(false);
     }
-  }, [specContent, workingDirectory, targetWorkspace]);
+  }, [targetWorkspace, refreshWorkspace]);
+
+  /**
+   * Delete a spec file
+   */
+  const deleteSpec = useCallback(async (filename: string) => {
+    if (!targetWorkspace) {
+      throw new Error('No workspace selected');
+    }
+
+    try {
+      setIsSaving(true);
+      setError(null);
+
+      await invoke<SaveResult>('delete_spec', {
+        filename,
+        workingDirectory: targetWorkspace,
+      });
+
+      // If the deleted spec was selected, clear selection
+      if (selectedSpec?.filename === filename) {
+        setSelectedSpec(null);
+        setSpecContentState('');
+        currentFilenameRef.current = null;
+      }
+
+      // Refresh workspace to update the list
+      await refreshWorkspace();
+    } catch (err) {
+      setError(err as string);
+      throw err;
+    } finally {
+      setIsSaving(false);
+    }
+  }, [targetWorkspace, selectedSpec, refreshWorkspace]);
 
   /**
    * Set spec content and mark as modified
-   * Auto-saves after a debounce period
+   * Auto-saves after a debounce period if a spec is selected
    */
   const setSpecContent = useCallback((content: string) => {
     setSpecContentState(content);
     specModifiedRef.current = true;
 
-    // No workspace - don't auto-save
-    if (!targetWorkspace) return;
+    // No workspace or no selected spec - don't auto-save
+    if (!targetWorkspace || !currentFilenameRef.current) return;
 
     // Clear existing timeout
     if (saveTimeoutRef.current) {
@@ -120,10 +199,12 @@ export function useWorkspace(targetWorkspace: string | null): UseWorkspaceReturn
     }
 
     // Auto-save after 2 seconds of inactivity
+    const filename = currentFilenameRef.current;
     saveTimeoutRef.current = setTimeout(async () => {
       try {
-        await invoke<SaveResult>('save_workspace', {
-          specContent: content,
+        await invoke<SaveResult>('save_spec', {
+          filename,
+          content,
           workingDirectory: targetWorkspace,
         });
         specModifiedRef.current = false;
@@ -132,10 +213,6 @@ export function useWorkspace(targetWorkspace: string | null): UseWorkspaceReturn
       }
     }, 2000);
   }, [targetWorkspace]);
-
-  const selectAdr = useCallback((adr: ADR | null) => {
-    setSelectedAdr(adr);
-  }, []);
 
   const appendConsoleOutput = useCallback((event: StreamEvent) => {
     setConsoleOutput((prev) => [...prev, event]);
@@ -151,12 +228,13 @@ export function useWorkspace(targetWorkspace: string | null): UseWorkspaceReturn
       refreshWorkspace();
     } else {
       // Reset state when no workspace
-      setAdrs([]);
-      setSelectedAdr(null);
+      setSpecs([]);
+      setSelectedSpec(null);
       setSpecContentState('');
       setWorkingDirectory('');
       setError(null);
       setIsLoading(false);
+      currentFilenameRef.current = null;
     }
   }, [targetWorkspace, refreshWorkspace]);
 
@@ -170,12 +248,13 @@ export function useWorkspace(targetWorkspace: string | null): UseWorkspaceReturn
   }, []);
 
   return {
-    adrs,
-    selectedAdr,
-    selectAdr,
+    specs,
+    selectedSpec,
+    selectSpec,
     specContent,
     setSpecContent,
     saveSpec,
+    deleteSpec,
     consoleOutput,
     appendConsoleOutput,
     clearConsole,

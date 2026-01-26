@@ -1,6 +1,7 @@
 // ============================================================================
-// Gemini API Integration
+// Gemini API Integration (Google AI Studio)
 // Handles chat with Google's Gemini API with streaming responses
+// Uses API key authentication (no OAuth required)
 // ============================================================================
 
 use futures_util::StreamExt;
@@ -9,6 +10,9 @@ use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter};
 use tauri_plugin_store::StoreExt;
+
+// Default model if none specified
+const DEFAULT_MODEL: &str = "gemini-2.5-flash";
 
 // ============================================================================
 // Types
@@ -34,6 +38,13 @@ pub struct StreamEvent {
 pub struct ChatResult {
     pub started: bool,
     pub session_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ValidateApiKeyResult {
+    pub valid: bool,
+    pub error: Option<String>,
 }
 
 // Gemini API types
@@ -110,9 +121,8 @@ fn emit_stream_event(app: &AppHandle, event_type: &str, data: &str) {
 }
 
 struct GeminiSettings {
-    project_id: String,
-    region: String,
-    api_key: Option<String>,
+    api_key: String,
+    model: String,
 }
 
 async fn get_settings(app: &AppHandle) -> Result<GeminiSettings, String> {
@@ -120,27 +130,19 @@ async fn get_settings(app: &AppHandle) -> Result<GeminiSettings, String> {
         .store("settings.json")
         .map_err(|e| format!("Failed to open settings store: {}", e))?;
 
-    let project_id = store
-        .get("gcpProjectId")
-        .and_then(|v| v.as_str().map(|s| s.to_string()))
-        .ok_or("GCP Project ID not configured. Please set it in Settings.")?;
-
-    // GCP region for Vertex AI - defaults to us-central1
-    let region = store
-        .get("gcpRegion")
-        .and_then(|v| v.as_str().map(|s| s.to_string()))
-        .unwrap_or_else(|| "us-central1".to_string());
-
-    // Also try to get API key if available (alternative to OAuth)
     let api_key = store
         .get("geminiApiKey")
-        .and_then(|v| v.as_str().map(|s| s.to_string()));
+        .and_then(|v| v.as_str().map(|s| s.to_string()))
+        .filter(|s| !s.is_empty())
+        .ok_or("Gemini API key not configured. Please set it in Settings.")?;
 
-    Ok(GeminiSettings {
-        project_id,
-        region,
-        api_key,
-    })
+    let model = store
+        .get("geminiModel")
+        .and_then(|v| v.as_str().map(|s| s.to_string()))
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| DEFAULT_MODEL.to_string());
+
+    Ok(GeminiSettings { api_key, model })
 }
 
 // ============================================================================
@@ -252,36 +254,17 @@ async fn stream_gemini_response(
 ) -> Result<(), String> {
     let client = Client::new();
 
-    // Build the API URL
-    // Using Vertex AI endpoint with project ID, or generativelanguage.googleapis.com with API key
-    let (url, auth_header) = if let Some(ref key) = settings.api_key {
-        // Use API key auth (simpler, no OAuth needed)
-        let url = format!(
-            "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:streamGenerateContent?key={}&alt=sse",
-            key
-        );
-        (url, None)
-    } else {
-        // Use Vertex AI with OAuth (requires access token)
-        let access_token = get_access_token(app).await?;
-        let url = format!(
-            "https://{}-aiplatform.googleapis.com/v1/projects/{}/locations/{}/publishers/google/models/gemini-1.5-flash:streamGenerateContent?alt=sse",
-            settings.region, settings.project_id, settings.region
-        );
-        (url, Some(format!("Bearer {}", access_token)))
-    };
+    // Build the API URL for Google AI Studio
+    let url = format!(
+        "https://generativelanguage.googleapis.com/v1beta/models/{}:streamGenerateContent?key={}&alt=sse",
+        settings.model, settings.api_key
+    );
 
     emit_stream_event(app, "output", "");
 
-    let mut request_builder = client
+    let response = client
         .post(&url)
-        .header("Content-Type", "application/json");
-
-    if let Some(auth) = auth_header {
-        request_builder = request_builder.header("Authorization", auth);
-    }
-
-    let response = request_builder
+        .header("Content-Type", "application/json")
         .json(&request)
         .send()
         .await
@@ -295,6 +278,7 @@ async fn stream_gemini_response(
     // Stream the response using SSE
     let mut stream = response.bytes_stream();
     let mut buffer = String::new();
+    let mut received_any_content = false;
 
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|e| format!("Stream error: {}", e))?;
@@ -302,14 +286,36 @@ async fn stream_gemini_response(
 
         buffer.push_str(&text);
 
-        // Process complete SSE events
-        while let Some(event_end) = buffer.find("\n\n") {
-            let event = buffer[..event_end].to_string();
-            buffer = buffer[event_end + 2..].to_string();
+        // Process complete SSE events (handle both \n\n and \r\n\r\n)
+        loop {
+            // Find the next event boundary
+            let event_end = buffer.find("\n\n")
+                .or_else(|| buffer.find("\r\n\r\n"));
 
-            // Parse SSE data
-            if let Some(data_line) = event.strip_prefix("data: ") {
-                if data_line.trim() == "[DONE]" {
+            let (end_pos, skip_len) = match event_end {
+                Some(pos) if buffer[pos..].starts_with("\r\n\r\n") => (pos, 4),
+                Some(pos) => (pos, 2),
+                None => break,
+            };
+
+            let event = buffer[..end_pos].to_string();
+            buffer = buffer[end_pos + skip_len..].to_string();
+
+            // Parse SSE data - handle multiple formats
+            let data_line = event
+                .strip_prefix("data: ")
+                .or_else(|| event.strip_prefix("data:"))
+                .or_else(|| {
+                    // Sometimes the data is on a line after "data:"
+                    event.lines()
+                        .find(|line| line.starts_with("data:") || line.starts_with("data: "))
+                        .and_then(|line| line.strip_prefix("data: ").or_else(|| line.strip_prefix("data:")))
+                });
+
+            if let Some(data_line) = data_line {
+                let data_line = data_line.trim();
+
+                if data_line == "[DONE]" || data_line.is_empty() {
                     continue;
                 }
 
@@ -326,7 +332,10 @@ async fn stream_gemini_response(
                                     if let Some(parts) = content.parts {
                                         for part in parts {
                                             if let Some(text) = part.text {
-                                                emit_stream_event(app, "output", &text);
+                                                if !text.is_empty() {
+                                                    received_any_content = true;
+                                                    emit_stream_event(app, "output", &text);
+                                                }
                                             }
                                         }
                                     }
@@ -336,9 +345,21 @@ async fn stream_gemini_response(
                     }
                     Err(e) => {
                         log::warn!("Failed to parse Gemini response: {} - {}", e, data_line);
+                        // Show parse errors to user for debugging
+                        emit_stream_event(app, "error", &format!("Parse error: {} (data: {}...)", e, &data_line[..data_line.len().min(100)]));
                     }
                 }
             }
+        }
+    }
+
+    // Check if we received any content
+    if !received_any_content {
+        // Check if there's remaining data in buffer
+        if !buffer.trim().is_empty() {
+            emit_stream_event(app, "error", &format!("Incomplete response. Remaining buffer: {}...", &buffer[..buffer.len().min(200)]));
+        } else {
+            emit_stream_event(app, "error", "No content received from Gemini API");
         }
     }
 
@@ -346,23 +367,33 @@ async fn stream_gemini_response(
     Ok(())
 }
 
-async fn get_access_token(app: &AppHandle) -> Result<String, String> {
-    // Try to get access token from auth store
-    let store = app
-        .store("auth.json")
-        .map_err(|e| format!("Failed to open auth store: {}", e))?;
+/// Validate a Gemini API key by making a test request
+#[tauri::command]
+pub async fn validate_gemini_api_key(api_key: String) -> Result<ValidateApiKeyResult, String> {
+    let client = Client::new();
+    let url = format!(
+        "https://generativelanguage.googleapis.com/v1beta/models?key={}",
+        api_key
+    );
 
-    match store.get("google_credentials") {
-        Some(value) => {
-            #[derive(Deserialize)]
-            struct Credentials {
-                access_token: String,
-            }
+    let response = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| format!("Network error: {}", e))?;
 
-            let creds: Credentials = serde_json::from_value(value.clone())
-                .map_err(|_| "Invalid credentials format")?;
-            Ok(creds.access_token)
-        }
-        None => Err("Not authenticated with Google. Please login first or add an API key in settings.".to_string()),
+    if response.status().is_success() {
+        Ok(ValidateApiKeyResult {
+            valid: true,
+            error: None,
+        })
+    } else {
+        let status = response.status();
+        let error_text = response.text().await.unwrap_or_default();
+        Ok(ValidateApiKeyResult {
+            valid: false,
+            error: Some(format!("Invalid API key ({}): {}", status, error_text)),
+        })
     }
 }
+

@@ -4,7 +4,10 @@
 // ============================================================================
 
 mod auth;
+mod deps;
+mod filetree;
 mod gemini;
+mod git;
 mod shell;
 mod workspace;
 
@@ -17,25 +20,40 @@ pub fn run() {
         .plugin(tauri_plugin_store::Builder::default().build())
         .manage(shell::ProcessRegistry::new())
         .invoke_handler(tauri::generate_handler![
+            // Dependency check commands
+            deps::check_dependencies,
             // Workspace commands
             workspace::validate_workspace,
             workspace::read_workspace,
-            workspace::save_workspace,
+            workspace::list_specs,
+            workspace::read_spec,
+            workspace::save_spec,
+            workspace::delete_spec,
+            workspace::read_workspace_context,
             // Shell commands
             shell::spawn_streaming_process,
+            shell::send_process_input,
             shell::cancel_streaming_processes,
             // Auth commands
+            auth::check_google_oauth_configured,
             auth::start_google_oauth,
             auth::check_google_auth,
             auth::get_google_access_token,
             auth::logout_google,
-            auth::start_anthropic_oauth,
             auth::check_anthropic_auth,
-            auth::get_anthropic_access_token,
+            auth::start_anthropic_oauth,
             auth::logout_anthropic,
             auth::check_all_auth,
             // Gemini chat commands
             gemini::chat_with_gemini,
+            gemini::validate_gemini_api_key,
+            // Git commands
+            git::git_status,
+            git::git_revert_all,
+            git::git_show_file,
+            git::read_file,
+            // File tree commands
+            filetree::get_file_tree,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

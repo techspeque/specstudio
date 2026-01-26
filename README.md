@@ -17,8 +17,8 @@ SpecStudio is a native desktop IDE designed for **Spec-Driven Development** — 
 - **ADR Context** — Load Architecture Decision Records to guide AI responses
 - **Gemini Chat** — Context-aware AI assistant for discussing your specs
 - **Claude Code Generation** — Generate production code and tests from specs
-- **Streaming Output** — Real-time console output with clean formatting
-- **Browser-Based Auth** — One-click login with Google and Anthropic
+- **Streaming Output** — Real-time console output with interactive input
+- **Browser-Based Auth** — One-click login with Google
 - **Persistent Settings** — Preferences stored locally via tauri-plugin-store
 - **Interactive Tour** — Guided onboarding for new users
 - **Manual Git Control** — You decide when to commit (no auto-commits)
@@ -55,81 +55,38 @@ cd specstudio
 bun install
 ```
 
-### OAuth Setup (Required for Distribution)
-
-SpecStudio uses browser-based OAuth for authentication. Users simply click "Login with Google" or "Login with Anthropic" and authenticate through their browser.
-
-To enable this, you need to create OAuth applications and set the credentials at **build time**:
-
-#### 1. Google OAuth Setup
-
-1. Go to [Google Cloud Console](https://console.cloud.google.com/)
-2. Create a new project or select existing
-3. Navigate to **APIs & Services → Credentials**
-4. Click **Create Credentials → OAuth client ID**
-5. Select **Desktop app** as application type
-6. Note the **Client ID** and **Client Secret**
-
-#### 2. Anthropic OAuth Setup
-
-1. Go to [Anthropic Console](https://console.anthropic.com/)
-2. Navigate to developer/OAuth settings
-3. Create a new OAuth application
-4. Set redirect URI to `http://127.0.0.1:23847`
-5. Note the **Client ID** and **Client Secret**
-
-#### 3. Build with Credentials
+### Building
 
 ```bash
-# Set environment variables before building
-export GOOGLE_CLIENT_ID="your-google-client-id.apps.googleusercontent.com"
-export GOOGLE_CLIENT_SECRET="your-google-client-secret"
-export ANTHROPIC_CLIENT_ID="your-anthropic-client-id"
-export ANTHROPIC_CLIENT_SECRET="your-anthropic-client-secret"
-
-# Build the app
-bun tauri:build
-```
-
-For development without OAuth (auth will show error messages):
-```bash
+# Development
 bun tauri:dev
-```
 
-## Running SpecStudio
-
-### Development
-
-```bash
-# Start Tauri dev server (hot reload)
-bun tauri:dev
-```
-
-### Production Build
-
-```bash
-# Build for your platform
-GOOGLE_CLIENT_ID=xxx GOOGLE_CLIENT_SECRET=xxx \
-ANTHROPIC_CLIENT_ID=xxx ANTHROPIC_CLIENT_SECRET=xxx \
+# Production build
 bun tauri:build
 ```
 
 Build outputs are in `src-tauri/target/release/bundle/`.
 
+To run the built app:
+```bash
+# macOS
+open src-tauri/target/release/bundle/macos/SpecStudio.app
+```
+
 ## Usage
 
-### 1. Authenticate
+### 1. First Launch Setup
 
-On first launch, click **"Login with Google"** or **"Login with Anthropic"**:
-- Your browser opens to the OAuth consent screen
-- Sign in with your existing account
-- Authorize SpecStudio
-- You'll see "Authentication Successful!" — close the browser tab
-- You're now logged in!
+On first launch, SpecStudio guides you through a quick setup:
 
-### 2. Configure Settings
+1. **Get a Gemini API Key**
+   - Go to [Google AI Studio](https://aistudio.google.com/apikey)
+   - Sign in with your Google account
+   - Click **Create API Key** and copy it
+   - Paste it in the setup wizard
 
-Click the gear icon (⚙️) in the top-right corner and enter your **Google Cloud Project ID**. This is required for Gemini chat features.
+2. **Install Claude Code CLI**
+   - Follow the installation guide at [Claude Code](https://docs.anthropic.com/claude-code)
 
 ### 3. Select a Workspace
 
@@ -175,7 +132,11 @@ The control bar provides these actions:
 | **Run Tests** | Executes `npm test` in your workspace |
 | **Run App** | Starts `npm run dev` in your workspace |
 
-### 7. Chat with Gemini
+### 7. Interactive Console
+
+When Claude Code runs, you can interact with it via the console input at the bottom. Type responses and press Enter to send input.
+
+### 8. Chat with Gemini
 
 Use the chat panel to discuss your spec, ask questions, or refine requirements. The selected ADR provides context for all conversations.
 
@@ -186,9 +147,10 @@ specstudio/
 ├── src-tauri/
 │   ├── src/
 │   │   ├── lib.rs        # Tauri app entry, plugin registration
-│   │   ├── auth.rs       # OAuth flow (Google + Anthropic)
+│   │   ├── auth.rs       # Browser-based OAuth
+│   │   ├── deps.rs       # Dependency checker
 │   │   ├── gemini.rs     # Gemini API with streaming
-│   │   ├── shell.rs      # Process spawning & streaming output
+│   │   ├── shell.rs      # Process spawning & interactive I/O
 │   │   └── workspace.rs  # Workspace file I/O
 │   ├── capabilities/     # Tauri permissions
 │   ├── Cargo.toml
@@ -199,49 +161,16 @@ specstudio/
 │   │   └── page.tsx
 │   ├── components/
 │   │   ├── ide/          # Main IDE components
-│   │   │   ├── adr-sidebar.tsx
-│   │   │   ├── control-bar.tsx
-│   │   │   ├── ide-layout.tsx
-│   │   │   ├── ide-tour.tsx
-│   │   │   ├── output-console.tsx
-│   │   │   └── settings-dialog.tsx
+│   │   ├── setup/        # Setup wizard
 │   │   ├── ui/           # shadcn/ui components
 │   │   └── workspace/    # Editor, chat, workspace splash
 │   ├── hooks/
-│   │   ├── use-auth.ts           # Auth state (OAuth)
+│   │   ├── use-auth.ts           # Auth state management
 │   │   ├── use-rpc.ts            # RPC & streaming hooks
-│   │   ├── use-workspace.ts      # Workspace file operations
-│   │   └── use-workspace-target.ts
+│   │   └── use-workspace.ts      # Workspace file operations
 │   └── types/
 ├── out/                  # Next.js static export
 └── package.json
-```
-
-## Architecture
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                     Tauri (Rust Backend)                     │
-│  ┌────────────────────────────────────────────────────────┐  │
-│  │  Commands (invoke handlers)                            │  │
-│  │  ├── auth.rs      → OAuth flow, token management       │  │
-│  │  ├── gemini.rs    → Gemini API streaming               │  │
-│  │  ├── shell.rs     → Claude CLI, npm processes          │  │
-│  │  └── workspace.rs → File I/O, ADR parsing              │  │
-│  ├────────────────────────────────────────────────────────┤  │
-│  │  Plugins                                               │  │
-│  │  ├── tauri-plugin-store  → Persistent settings         │  │
-│  │  ├── tauri-plugin-shell  → Process spawning            │  │
-│  │  └── tauri-plugin-dialog → Native file picker          │  │
-│  └────────────────────────────────────────────────────────┘  │
-│                            ▲                                  │
-│                            │ IPC (invoke/listen)              │
-│                            ▼                                  │
-│  ┌────────────────────────────────────────────────────────┐  │
-│  │              WebView (React/Next.js SSG)               │  │
-│  │  @tauri-apps/api → invoke(), listen()                  │  │
-│  └────────────────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────────┘
 ```
 
 ## Scripts
@@ -295,13 +224,6 @@ git push
 
 ## Troubleshooting
 
-### OAuth "Not Configured" Error
-
-If you see "Google OAuth not configured" or similar:
-- OAuth credentials must be set at **build time** via environment variables
-- For development, auth features won't work without credentials
-- See [OAuth Setup](#oauth-setup-required-for-distribution) above
-
 ### Claude CLI Not Found
 
 Ensure Claude Code CLI is installed and in your PATH:
@@ -315,9 +237,9 @@ claude --version
 
 ### Gemini Chat Not Working
 
-1. Ensure you're authenticated with Google (click "Login with Google")
-2. Verify your GCP Project ID is set in Settings
-3. Check that Vertex AI API is enabled in your GCP project
+1. Verify your API key is entered correctly in Settings
+2. Get a new API key from [Google AI Studio](https://aistudio.google.com/apikey) if needed
+3. Check you have selected a valid model in Settings
 
 ### Linux Build Issues
 

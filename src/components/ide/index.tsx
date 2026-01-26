@@ -2,17 +2,20 @@
 
 // ============================================================================
 // IDE Entry Point
-// Handles auth gating and renders the main IDE
+// Handles setup wizard and renders the main IDE
 // ============================================================================
 
-import { useAuth } from '@/hooks/use-auth';
+import { useState, useCallback } from 'react';
 import { useWorkspaceTarget } from '@/hooks/use-workspace-target';
-import { AuthSplash } from '@/components/auth/auth-splash';
+import { SetupWizard } from '@/components/setup/setup-wizard';
 import { IdeLayout } from './ide-layout';
 import { Loader2 } from 'lucide-react';
 
 export function Ide() {
-  const { isAuthenticated, isLoading: isAuthLoading } = useAuth();
+  // Setup wizard handles checking API key and Claude CLI
+  // It will auto-skip if everything is already configured
+  const [setupComplete, setSetupComplete] = useState(false);
+
   const {
     activeWorkspace,
     workspaces,
@@ -28,21 +31,25 @@ export function Ide() {
     isInitialized,
   } = useWorkspaceTarget();
 
-  // Show loading state on initial auth check or workspace init
-  if (isAuthLoading || !isInitialized) {
+  const handleSetupComplete = useCallback(() => {
+    setSetupComplete(true);
+  }, []);
+
+  // Show setup wizard first - it will auto-skip if already configured
+  if (!setupComplete) {
+    return <SetupWizard onComplete={handleSetupComplete} />;
+  }
+
+  // Show loading state during workspace init
+  if (!isInitialized) {
     return (
       <div className="min-h-screen bg-zinc-950 flex items-center justify-center">
         <div className="flex items-center gap-3 text-zinc-400">
           <Loader2 className="h-6 w-6 animate-spin" />
-          <span>{isAuthLoading ? 'Checking authentication...' : 'Loading...'}</span>
+          <span>Loading...</span>
         </div>
       </div>
     );
-  }
-
-  // Show auth splash if not fully authenticated
-  if (!isAuthenticated) {
-    return <AuthSplash />;
   }
 
   // Render the IDE - handles both with and without workspace

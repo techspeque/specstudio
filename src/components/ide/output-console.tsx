@@ -2,15 +2,16 @@
 
 // ============================================================================
 // Output Console
-// Bottom panel for streaming terminal output
+// Bottom panel for streaming terminal output with interactive input
 // ============================================================================
 
-import { useRef, useEffect, useState } from 'react';
+import { useRef, useEffect, useState, useCallback, KeyboardEvent } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 import { StreamEvent } from '@/types';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { Terminal, Trash2, XCircle } from 'lucide-react';
+import { Terminal, Trash2, XCircle, Send } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 // Dynamic import for strip-ansi (ESM module)
@@ -61,6 +62,9 @@ export function OutputConsole({
   isStreaming,
 }: OutputConsoleProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [inputValue, setInputValue] = useState('');
+  const [isSending, setIsSending] = useState(false);
 
   // Auto-scroll to bottom on new events
   useEffect(() => {
@@ -71,6 +75,35 @@ export function OutputConsole({
       }
     }
   }, [events]);
+
+  // Focus input when streaming starts
+  useEffect(() => {
+    if (isStreaming && inputRef.current) {
+      inputRef.current.focus();
+    }
+  }, [isStreaming]);
+
+  const sendInput = useCallback(async () => {
+    if (!inputValue.trim() || isSending || !isStreaming) return;
+
+    setIsSending(true);
+    try {
+      await invoke('send_process_input', { input: inputValue });
+      setInputValue('');
+    } catch (err) {
+      console.error('Failed to send input:', err);
+    } finally {
+      setIsSending(false);
+      inputRef.current?.focus();
+    }
+  }, [inputValue, isSending, isStreaming]);
+
+  const handleKeyDown = useCallback((e: KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      sendInput();
+    }
+  }, [sendInput]);
 
   return (
     <div className="h-full flex flex-col bg-zinc-950 border-t border-zinc-800">
@@ -124,6 +157,34 @@ export function OutputConsole({
           )}
         </div>
       </ScrollArea>
+
+      {/* Input Field - only show when streaming */}
+      {isStreaming && (
+        <div className="px-4 py-2 border-t border-zinc-800 bg-zinc-900/50">
+          <div className="flex items-center gap-2">
+            <span className="text-zinc-500 text-xs font-mono shrink-0">&gt;</span>
+            <input
+              ref={inputRef}
+              type="text"
+              value={inputValue}
+              onChange={(e) => setInputValue(e.target.value)}
+              onKeyDown={handleKeyDown}
+              placeholder="Type input and press Enter..."
+              className="flex-1 bg-transparent border-none outline-none text-xs font-mono text-zinc-200 placeholder:text-zinc-600"
+              disabled={isSending}
+            />
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={sendInput}
+              disabled={!inputValue.trim() || isSending}
+              className="h-6 px-2 text-zinc-500 hover:text-zinc-300"
+            >
+              <Send className="h-3 w-3" />
+            </Button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -144,7 +205,8 @@ function ConsoleLine({ event }: ConsoleLineProps) {
           'whitespace-pre-wrap break-all',
           event.type === 'error' && 'text-red-400',
           event.type === 'output' && 'text-zinc-300',
-          event.type === 'complete' && 'text-green-400'
+          event.type === 'complete' && 'text-green-400',
+          event.type === 'input' && 'text-blue-400'
         )}
       >
         {cleanData}

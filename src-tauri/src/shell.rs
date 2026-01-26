@@ -1,14 +1,15 @@
 // ============================================================================
 // Shell Commands
 // Handles process spawning and streaming output via Tauri Events
+// Supports interactive input for CLI tools like Claude Code
 // ============================================================================
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::PathBuf;
-use std::process::{Command, ChildStdout, ChildStderr, Stdio};
+use std::process::{Child, ChildStdin, ChildStdout, ChildStderr, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -40,13 +41,25 @@ pub struct CancelResult {
     pub success: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InputResult {
+    pub success: bool,
+    pub message: String,
+}
+
 // ============================================================================
 // Process Registry
-// Tracks active streaming processes for cancellation
+// Tracks active streaming processes for cancellation and input
 // ============================================================================
 
+struct ProcessHandle {
+    child: Arc<Mutex<Option<Child>>>,
+    stdin: Arc<Mutex<Option<ChildStdin>>>,
+}
+
 pub struct ProcessRegistry {
-    processes: Mutex<HashMap<String, Arc<Mutex<Option<std::process::Child>>>>>,
+    processes: Mutex<HashMap<String, ProcessHandle>>,
 }
 
 impl ProcessRegistry {
@@ -56,10 +69,23 @@ impl ProcessRegistry {
         }
     }
 
-    pub fn register(&self, id: String, child: std::process::Child) -> Arc<Mutex<Option<std::process::Child>>> {
-        let handle = Arc::new(Mutex::new(Some(child)));
-        self.processes.lock().unwrap().insert(id, handle.clone());
-        handle
+    pub fn register(&self, id: String, mut child: Child) -> (Arc<Mutex<Option<Child>>>, Arc<Mutex<Option<ChildStdin>>>) {
+        let stdin = child.stdin.take();
+        let child_handle = Arc::new(Mutex::new(Some(child)));
+        let stdin_handle = Arc::new(Mutex::new(stdin));
+
+        self.processes.lock().unwrap().insert(id, ProcessHandle {
+            child: child_handle.clone(),
+            stdin: stdin_handle.clone(),
+        });
+
+        (child_handle, stdin_handle)
+    }
+
+    pub fn get_stdin(&self, id: &str) -> Option<Arc<Mutex<Option<ChildStdin>>>> {
+        self.processes.lock().unwrap()
+            .get(id)
+            .map(|h| h.stdin.clone())
     }
 
     pub fn remove(&self, id: &str) {
@@ -70,7 +96,7 @@ impl ProcessRegistry {
         let mut killed = 0;
         let mut registry = self.processes.lock().unwrap();
         for (_, handle) in registry.drain() {
-            if let Ok(mut guard) = handle.lock() {
+            if let Ok(mut guard) = handle.child.lock() {
                 if let Some(ref mut child) = *guard {
                     let _ = child.kill();
                     killed += 1;
@@ -78,6 +104,13 @@ impl ProcessRegistry {
             }
         }
         killed
+    }
+
+    pub fn get_active_process_id(&self) -> Option<String> {
+        self.processes.lock().unwrap()
+            .keys()
+            .next()
+            .cloned()
     }
 }
 
@@ -196,7 +229,7 @@ pub fn spawn_streaming_process(
     // Get the process registry
     let registry = app.state::<ProcessRegistry>();
 
-    emit_stream_event(&app, "output", &format!("Starting {}...", action));
+    emit_stream_event(&app, "output", &format!("Starting {}...\n", action));
 
     match action.as_str() {
         "create_code" | "gen_tests" => {
@@ -210,11 +243,14 @@ pub fn spawn_streaming_process(
             fs::write(&temp_path, &prompt)
                 .map_err(|e| format!("Failed to write temp prompt file: {}", e))?;
 
-            // Spawn claude process
+            // Spawn claude process with stdin enabled for interactivity
+            // Use --dangerously-skip-permissions to prevent Claude from hanging
+            // waiting for manual tool approval in headless mode
             let mut cmd = Command::new("claude");
             cmd.args(["-p", temp_path.to_str().unwrap(), "--dangerously-skip-permissions"])
                 .current_dir(&cwd)
                 .env("FORCE_COLOR", "0")
+                .stdin(Stdio::piped())   // Enable stdin for interactive input
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped());
 
@@ -225,7 +261,7 @@ pub fn spawn_streaming_process(
             let stderr = child.stderr.take();
 
             let proc_id = process_id.clone();
-            let handle = registry.register(proc_id.clone(), child);
+            let (child_handle, _stdin_handle) = registry.register(proc_id.clone(), child);
 
             // Spawn thread to read stdout (byte-based, doesn't block on newlines)
             let app_stdout = app.clone();
@@ -261,7 +297,7 @@ pub fn spawn_streaming_process(
                 }
 
                 // Get exit code
-                let exit_code = if let Ok(mut guard) = handle.lock() {
+                let exit_code = if let Ok(mut guard) = child_handle.lock() {
                     if let Some(ref mut child) = *guard {
                         child.wait().map(|s| s.code().unwrap_or(-1)).unwrap_or(-1)
                     } else {
@@ -272,8 +308,12 @@ pub fn spawn_streaming_process(
                 };
 
                 // Cleanup - get registry from app handle inside the thread
-                let registry = app_complete.state::<ProcessRegistry>();
-                registry.remove(&proc_id);
+                // Use catch_unwind to handle app shutdown gracefully
+                if let Ok(registry) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    app_complete.state::<ProcessRegistry>()
+                })) {
+                    registry.remove(&proc_id);
+                }
                 let _ = fs::remove_file(&temp_path_clone);
 
                 emit_stream_event(
@@ -315,6 +355,7 @@ fn spawn_npm_command(
     cmd.args(args)
         .current_dir(cwd)
         .env("FORCE_COLOR", "0")
+        .stdin(Stdio::piped())   // Enable stdin for interactivity
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
@@ -325,7 +366,7 @@ fn spawn_npm_command(
     let stderr = child.stderr.take();
 
     let proc_id = process_id.to_string();
-    let handle = registry.register(proc_id.clone(), child);
+    let (child_handle, _stdin_handle) = registry.register(proc_id.clone(), child);
 
     // Spawn thread to read stdout (byte-based, doesn't block on newlines)
     let app_stdout = app.clone();
@@ -364,7 +405,7 @@ fn spawn_npm_command(
         }
 
         // Get exit code
-        let exit_code = if let Ok(mut guard) = handle.lock() {
+        let exit_code = if let Ok(mut guard) = child_handle.lock() {
             if let Some(ref mut child) = *guard {
                 child.wait().map(|s| s.code().unwrap_or(-1)).unwrap_or(-1)
             } else {
@@ -374,9 +415,12 @@ fn spawn_npm_command(
             -1
         };
 
-        // Cleanup
-        let registry = app_for_registry.state::<ProcessRegistry>();
-        registry.remove(&proc_id_clone);
+        // Cleanup - use catch_unwind to handle app shutdown gracefully
+        if let Ok(registry) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            app_for_registry.state::<ProcessRegistry>()
+        })) {
+            registry.remove(&proc_id_clone);
+        }
 
         emit_stream_event(
             &app_complete,
@@ -389,6 +433,44 @@ fn spawn_npm_command(
         started: true,
         process_id: proc_id,
     })
+}
+
+/// Send input to a running process
+#[tauri::command]
+pub fn send_process_input(
+    app: AppHandle,
+    input: String,
+) -> Result<InputResult, String> {
+    let registry = app.state::<ProcessRegistry>();
+
+    // Get the active process (most recent one)
+    let process_id = registry.get_active_process_id()
+        .ok_or("No active process to send input to")?;
+
+    let stdin_handle = registry.get_stdin(&process_id)
+        .ok_or("Process not found")?;
+
+    let mut stdin_guard = stdin_handle.lock()
+        .map_err(|_| "Failed to lock stdin")?;
+
+    if let Some(ref mut stdin) = *stdin_guard {
+        // Write input followed by newline
+        let input_with_newline = format!("{}\n", input);
+        stdin.write_all(input_with_newline.as_bytes())
+            .map_err(|e| format!("Failed to write to stdin: {}", e))?;
+        stdin.flush()
+            .map_err(|e| format!("Failed to flush stdin: {}", e))?;
+
+        // Echo the input to the console so user sees what they typed
+        emit_stream_event(&app, "input", &format!("> {}\n", input));
+
+        Ok(InputResult {
+            success: true,
+            message: "Input sent successfully".to_string(),
+        })
+    } else {
+        Err("Process stdin is not available".to_string())
+    }
 }
 
 #[tauri::command]

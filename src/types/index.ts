@@ -18,6 +18,7 @@ export interface AuthResponse {
 // RPC Action Types
 export type RpcAction =
   | 'chat'
+  | 'gen_spec'
   | 'validate'
   | 'create_code'
   | 'gen_tests'
@@ -35,7 +36,6 @@ export interface RpcRequest {
     prompt?: string;
     history?: ChatMessage[];
     specContent?: string;
-    adrContext?: string;
     workingDirectory?: string;
   };
 }
@@ -48,20 +48,16 @@ export interface RpcResponse {
   stream?: boolean;
 }
 
-// ADR Types
-export interface ADR {
-  id: string;
-  title: string;
-  status: 'proposed' | 'accepted' | 'deprecated' | 'superseded';
-  context: string;
-  decision: string;
-  consequences: string;
+// Spec Types
+export interface Spec {
   filename: string;
+  title: string;
+  createdAt: string;
 }
 
 // Stream Event Types
 export interface StreamEvent {
-  type: 'output' | 'error' | 'complete';
+  type: 'output' | 'error' | 'complete' | 'input';
   data: string;
   timestamp: number;
 }

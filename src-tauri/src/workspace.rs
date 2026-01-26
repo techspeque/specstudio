@@ -1,6 +1,6 @@
 // ============================================================================
 // Workspace Commands
-// Handles file I/O for spec.md and ADR files
+// Handles file I/O for specs and workspace context
 // ============================================================================
 
 use serde::{Deserialize, Serialize};
@@ -11,27 +11,77 @@ use std::path::{Path, PathBuf};
 // Constants
 // ============================================================================
 
-const SPEC_FILE: &str = "spec.md";
-const ADR_DIR: &str = "docs/adr";
+const SPECS_DIR: &str = "docs/specs";
 
-const DEFAULT_SPEC_CONTENT: &str = r#"# Feature Specification
+// Directories/files to exclude when reading workspace for AI context
+const EXCLUDED_DIRS: &[&str] = &[
+    "node_modules",
+    ".git",
+    ".next",
+    ".nuxt",
+    "dist",
+    "build",
+    "target",
+    ".turbo",
+    ".cache",
+    ".parcel-cache",
+    "coverage",
+    ".nyc_output",
+    "__pycache__",
+    ".pytest_cache",
+    "venv",
+    ".venv",
+    "env",
+    ".env",
+    ".tox",
+    "vendor",
+    "Pods",
+    ".gradle",
+    ".idea",
+    ".vscode",
+    ".DS_Store",
+    "out",
+];
 
-## Overview
-Describe the feature or component you want to build.
+const EXCLUDED_EXTENSIONS: &[&str] = &[
+    "lock",
+    "log",
+    "png",
+    "jpg",
+    "jpeg",
+    "gif",
+    "svg",
+    "ico",
+    "woff",
+    "woff2",
+    "ttf",
+    "eot",
+    "mp3",
+    "mp4",
+    "wav",
+    "avi",
+    "mov",
+    "pdf",
+    "zip",
+    "tar",
+    "gz",
+    "rar",
+    "7z",
+    "exe",
+    "dll",
+    "so",
+    "dylib",
+    "bin",
+    "dat",
+    "db",
+    "sqlite",
+    "sqlite3",
+];
 
-## Requirements
-- Requirement 1
-- Requirement 2
-- Requirement 3
-
-## Acceptance Criteria
-- [ ] Criterion 1
-- [ ] Criterion 2
-- [ ] Criterion 3
-
-## Technical Notes
-Add any implementation details or constraints here.
-"#;
+// Max file size to include (1MB)
+const MAX_FILE_SIZE: u64 = 1024 * 1024;
+// Max total context size (5MB)
+const MAX_TOTAL_SIZE: usize = 5 * 1024 * 1024;
 
 const FORBIDDEN_PATHS: &[&str] = &[
     "/etc", "/usr", "/bin", "/sbin", "/lib", "/lib64",
@@ -45,21 +95,16 @@ const FORBIDDEN_PATHS: &[&str] = &[
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct Adr {
-    pub id: String,
-    pub title: String,
-    pub status: String,
-    pub context: String,
-    pub decision: String,
-    pub consequences: String,
+pub struct Spec {
     pub filename: String,
+    pub title: String,
+    pub created_at: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkspaceData {
-    pub spec_content: String,
-    pub adrs: Vec<Adr>,
+    pub specs: Vec<Spec>,
     pub working_directory: String,
 }
 
@@ -78,6 +123,29 @@ pub struct ValidateResult {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SaveResult {
     pub success: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SpecContent {
+    pub filename: String,
+    pub content: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceContext {
+    pub files: Vec<FileContent>,
+    pub total_files: usize,
+    pub total_size: usize,
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileContent {
+    pub path: String,
+    pub content: String,
 }
 
 // ============================================================================
@@ -158,66 +226,217 @@ pub fn validate_workspace(input_path: String) -> ValidateResult {
     }
 }
 
+/// Read workspace data (list of specs)
 #[tauri::command]
 pub fn read_workspace(working_directory: Option<String>) -> Result<WorkspaceData, String> {
     let cwd = working_directory
         .map(PathBuf::from)
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
 
-    let spec_content = read_spec(&cwd)?;
-    let adrs = read_adrs(&cwd)?;
+    let specs = list_specs_internal(&cwd)?;
 
     Ok(WorkspaceData {
-        spec_content,
-        adrs,
+        specs,
         working_directory: cwd.to_string_lossy().to_string(),
     })
 }
 
+/// List all specs in docs/specs/
 #[tauri::command]
-pub fn save_workspace(spec_content: String, working_directory: Option<String>) -> Result<SaveResult, String> {
+pub fn list_specs(working_directory: Option<String>) -> Result<Vec<Spec>, String> {
     let cwd = working_directory
         .map(PathBuf::from)
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
 
-    let spec_path = cwd.join(SPEC_FILE);
+    list_specs_internal(&cwd)
+}
 
-    fs::write(&spec_path, &spec_content)
-        .map_err(|e| format!("Failed to save spec.md: {}", e))?;
+/// Read a specific spec file
+#[tauri::command]
+pub fn read_spec(filename: String, working_directory: Option<String>) -> Result<SpecContent, String> {
+    let cwd = working_directory
+        .map(PathBuf::from)
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+
+    let specs_dir = cwd.join(SPECS_DIR);
+    let spec_path = specs_dir.join(&filename);
+
+    if !spec_path.exists() {
+        return Err(format!("Spec file not found: {}", filename));
+    }
+
+    let content = fs::read_to_string(&spec_path)
+        .map_err(|e| format!("Failed to read spec file: {}", e))?;
+
+    Ok(SpecContent { filename, content })
+}
+
+/// Save a spec file to docs/specs/
+#[tauri::command]
+pub fn save_spec(filename: String, content: String, working_directory: Option<String>) -> Result<SaveResult, String> {
+    let cwd = working_directory
+        .map(PathBuf::from)
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+
+    let specs_dir = cwd.join(SPECS_DIR);
+
+    // Ensure the docs/specs directory exists
+    if !specs_dir.exists() {
+        fs::create_dir_all(&specs_dir)
+            .map_err(|e| format!("Failed to create specs directory: {}", e))?;
+    }
+
+    let spec_path = specs_dir.join(&filename);
+
+    fs::write(&spec_path, &content)
+        .map_err(|e| format!("Failed to save spec file: {}", e))?;
 
     Ok(SaveResult { success: true })
+}
+
+/// Delete a spec file
+#[tauri::command]
+pub fn delete_spec(filename: String, working_directory: Option<String>) -> Result<SaveResult, String> {
+    let cwd = working_directory
+        .map(PathBuf::from)
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+
+    let specs_dir = cwd.join(SPECS_DIR);
+    let spec_path = specs_dir.join(&filename);
+
+    if !spec_path.exists() {
+        return Err(format!("Spec file not found: {}", filename));
+    }
+
+    fs::remove_file(&spec_path)
+        .map_err(|e| format!("Failed to delete spec file: {}", e))?;
+
+    Ok(SaveResult { success: true })
+}
+
+/// Read workspace files for AI context (with exclusions)
+#[tauri::command]
+pub fn read_workspace_context(working_directory: String) -> Result<WorkspaceContext, String> {
+    let cwd = PathBuf::from(&working_directory);
+
+    if !cwd.exists() || !cwd.is_dir() {
+        return Err("Working directory does not exist".to_string());
+    }
+
+    let mut files: Vec<FileContent> = Vec::new();
+    let mut total_size: usize = 0;
+    let mut truncated = false;
+
+    collect_files(&cwd, &cwd, &mut files, &mut total_size, &mut truncated)?;
+
+    let total_files = files.len();
+
+    Ok(WorkspaceContext {
+        files,
+        total_files,
+        total_size,
+        truncated,
+    })
+}
+
+fn collect_files(
+    base: &Path,
+    dir: &Path,
+    files: &mut Vec<FileContent>,
+    total_size: &mut usize,
+    truncated: &mut bool,
+) -> Result<(), String> {
+    if *total_size >= MAX_TOTAL_SIZE {
+        *truncated = true;
+        return Ok(());
+    }
+
+    let entries = fs::read_dir(dir)
+        .map_err(|e| format!("Failed to read directory: {}", e))?;
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let file_name = path.file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("");
+
+        // Skip excluded directories
+        if path.is_dir() {
+            if EXCLUDED_DIRS.contains(&file_name) {
+                continue;
+            }
+            // Recurse into subdirectory
+            collect_files(base, &path, files, total_size, truncated)?;
+            continue;
+        }
+
+        // Skip non-files
+        if !path.is_file() {
+            continue;
+        }
+
+        // Skip by extension
+        if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+            if EXCLUDED_EXTENSIONS.contains(&ext.to_lowercase().as_str()) {
+                continue;
+            }
+        }
+
+        // Skip files that are too large
+        let metadata = match fs::metadata(&path) {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+
+        if metadata.len() > MAX_FILE_SIZE {
+            continue;
+        }
+
+        // Check if adding this file would exceed total limit
+        if *total_size + metadata.len() as usize > MAX_TOTAL_SIZE {
+            *truncated = true;
+            continue;
+        }
+
+        // Read file content
+        let content = match fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(_) => continue, // Skip binary files that can't be read as UTF-8
+        };
+
+        // Get relative path
+        let relative_path = path.strip_prefix(base)
+            .unwrap_or(&path)
+            .to_string_lossy()
+            .to_string();
+
+        *total_size += content.len();
+        files.push(FileContent {
+            path: relative_path,
+            content,
+        });
+    }
+
+    Ok(())
 }
 
 // ============================================================================
 // Helper Functions
 // ============================================================================
 
-fn read_spec(cwd: &Path) -> Result<String, String> {
-    let spec_path = cwd.join(SPEC_FILE);
+fn list_specs_internal(cwd: &Path) -> Result<Vec<Spec>, String> {
+    let specs_dir = cwd.join(SPECS_DIR);
 
-    if !spec_path.exists() {
-        fs::write(&spec_path, DEFAULT_SPEC_CONTENT)
-            .map_err(|e| format!("Failed to create spec.md: {}", e))?;
-        return Ok(DEFAULT_SPEC_CONTENT.to_string());
-    }
-
-    fs::read_to_string(&spec_path)
-        .map_err(|e| format!("Failed to read spec.md: {}", e))
-}
-
-fn read_adrs(cwd: &Path) -> Result<Vec<Adr>, String> {
-    let adr_path = cwd.join(ADR_DIR);
-
-    if !adr_path.exists() {
-        fs::create_dir_all(&adr_path)
-            .map_err(|e| format!("Failed to create ADR directory: {}", e))?;
+    if !specs_dir.exists() {
+        fs::create_dir_all(&specs_dir)
+            .map_err(|e| format!("Failed to create specs directory: {}", e))?;
         return Ok(Vec::new());
     }
 
-    let entries = fs::read_dir(&adr_path)
-        .map_err(|e| format!("Failed to read ADR directory: {}", e))?;
+    let entries = fs::read_dir(&specs_dir)
+        .map_err(|e| format!("Failed to read specs directory: {}", e))?;
 
-    let mut adrs: Vec<Adr> = Vec::new();
+    let mut specs: Vec<Spec> = Vec::new();
 
     for entry in entries.flatten() {
         let path = entry.path();
@@ -229,90 +448,35 @@ fn read_adrs(cwd: &Path) -> Result<Vec<Adr>, String> {
                 .to_string();
 
             if let Ok(content) = fs::read_to_string(&path) {
-                if let Some(adr) = parse_adr(&content, &filename) {
-                    adrs.push(adr);
-                }
+                let title = extract_first_heading(&content)
+                    .unwrap_or_else(|| filename.trim_end_matches(".md").to_string());
+
+                // Extract date from filename if present (YYYYMMDD-name.md format)
+                let created_at = extract_date_from_filename(&filename)
+                    .unwrap_or_else(|| {
+                        // Fallback to file modification time
+                        path.metadata()
+                            .and_then(|m| m.modified())
+                            .ok()
+                            .map(|t| {
+                                let datetime: chrono::DateTime<chrono::Utc> = t.into();
+                                datetime.format("%Y-%m-%d").to_string()
+                            })
+                            .unwrap_or_else(|| "Unknown".to_string())
+                    });
+
+                specs.push(Spec {
+                    filename,
+                    title,
+                    created_at,
+                });
             }
         }
     }
 
-    adrs.sort_by(|a, b| a.id.cmp(&b.id));
-    Ok(adrs)
-}
-
-fn parse_adr(content: &str, filename: &str) -> Option<Adr> {
-    let id = extract_adr_id(filename);
-
-    if content.starts_with("---\n") {
-        if let Some(end_idx) = content[4..].find("\n---") {
-            let frontmatter = &content[4..4 + end_idx];
-            let body = content[4 + end_idx + 4..].trim();
-
-            let title = extract_frontmatter_field(frontmatter, "title")
-                .or_else(|| extract_first_heading(content))
-                .unwrap_or_else(|| filename.to_string());
-
-            let status = extract_frontmatter_field(frontmatter, "status")
-                .map(|s| validate_status(&s))
-                .unwrap_or_else(|| "proposed".to_string());
-
-            return Some(Adr {
-                id,
-                title,
-                status,
-                context: extract_section(body, "Context").unwrap_or_default(),
-                decision: extract_section(body, "Decision").unwrap_or_default(),
-                consequences: extract_section(body, "Consequences").unwrap_or_default(),
-                filename: filename.to_string(),
-            });
-        }
-    }
-
-    let title = extract_first_heading(content)
-        .unwrap_or_else(|| filename.to_string());
-
-    let status = extract_status_from_content(content);
-
-    Some(Adr {
-        id,
-        title,
-        status,
-        context: extract_section(content, "Context").unwrap_or_default(),
-        decision: extract_section(content, "Decision").unwrap_or_default(),
-        consequences: extract_section(content, "Consequences").unwrap_or_default(),
-        filename: filename.to_string(),
-    })
-}
-
-fn extract_adr_id(filename: &str) -> String {
-    let lowercase = filename.to_lowercase();
-    if let Some(start) = lowercase.find("adr-") {
-        let rest = &lowercase[start..];
-        let mut end = 4;
-        for c in rest[4..].chars() {
-            if c.is_ascii_digit() {
-                end += 1;
-            } else {
-                break;
-            }
-        }
-        return rest[..end].to_string();
-    }
-    filename.strip_suffix(".md").unwrap_or(filename).to_string()
-}
-
-fn extract_frontmatter_field(frontmatter: &str, field: &str) -> Option<String> {
-    for line in frontmatter.lines() {
-        let trimmed = line.trim();
-        if trimmed.to_lowercase().starts_with(&format!("{}:", field.to_lowercase())) {
-            let value = trimmed[field.len() + 1..].trim();
-            let unquoted = value.trim_matches('"').trim_matches('\'');
-            if !unquoted.is_empty() {
-                return Some(unquoted.to_string());
-            }
-        }
-    }
-    None
+    // Sort by filename (which includes date prefix) descending
+    specs.sort_by(|a, b| b.filename.cmp(&a.filename));
+    Ok(specs)
 }
 
 fn extract_first_heading(content: &str) -> Option<String> {
@@ -321,80 +485,23 @@ fn extract_first_heading(content: &str) -> Option<String> {
         if trimmed.starts_with("# ") {
             return Some(trimmed[2..].trim().to_string());
         }
-        if trimmed.starts_with("## ") {
-            return Some(trimmed[3..].trim().to_string());
-        }
     }
     None
 }
 
-fn extract_section(content: &str, section_name: &str) -> Option<String> {
-    let section_lower = section_name.to_lowercase();
-    let lines: Vec<&str> = content.lines().collect();
-
-    let mut in_section = false;
-    let mut section_content = Vec::new();
-
-    for line in lines {
-        let trimmed = line.trim();
-
-        if trimmed.starts_with("## ") || trimmed.starts_with("### ") {
-            let header_text = trimmed.trim_start_matches('#').trim().to_lowercase();
-
-            if header_text.starts_with(&section_lower) {
-                in_section = true;
-                continue;
-            } else if in_section {
-                break;
-            }
-        } else if in_section {
-            section_content.push(line);
+fn extract_date_from_filename(filename: &str) -> Option<String> {
+    // Expected format: YYYYMMDD-feature-name.md
+    if filename.len() >= 8 {
+        let date_part = &filename[..8];
+        if date_part.chars().all(|c| c.is_ascii_digit()) {
+            // Format as YYYY-MM-DD
+            return Some(format!(
+                "{}-{}-{}",
+                &date_part[..4],
+                &date_part[4..6],
+                &date_part[6..8]
+            ));
         }
     }
-
-    if section_content.is_empty() {
-        None
-    } else {
-        Some(section_content.join("\n").trim().to_string())
-    }
-}
-
-fn extract_status_from_content(content: &str) -> String {
-    let content_lower = content.to_lowercase();
-
-    if let Some(idx) = content_lower.find("status:") {
-        let rest = &content_lower[idx + 7..];
-        let status_word: String = rest
-            .trim()
-            .chars()
-            .take_while(|c| c.is_alphabetic())
-            .collect();
-
-        if !status_word.is_empty() {
-            return validate_status(&status_word);
-        }
-    }
-
-    if let Some(status_section) = extract_section(content, "Status") {
-        let status = status_section.to_lowercase();
-        let first_word: String = status
-            .trim()
-            .chars()
-            .take_while(|c| c.is_alphabetic())
-            .collect();
-
-        if !first_word.is_empty() {
-            return validate_status(&first_word);
-        }
-    }
-
-    "proposed".to_string()
-}
-
-fn validate_status(status: &str) -> String {
-    let normalized = status.to_lowercase();
-    match normalized.trim() {
-        "proposed" | "accepted" | "deprecated" | "superseded" => normalized.trim().to_string(),
-        _ => "proposed".to_string(),
-    }
+    None
 }

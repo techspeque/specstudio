@@ -25,37 +25,30 @@ import {
 } from '@/components/ui/select';
 import { Settings, Loader2, CheckCircle, AlertCircle } from 'lucide-react';
 import { load } from '@tauri-apps/plugin-store';
+import { invoke } from '@tauri-apps/api/core';
 
 const STORE_FILE = 'settings.json';
 
-// Common GCP regions for Vertex AI
-const GCP_REGIONS = [
-  { value: 'us-central1', label: 'US Central (Iowa)' },
-  { value: 'us-east1', label: 'US East (South Carolina)' },
-  { value: 'us-east4', label: 'US East (Virginia)' },
-  { value: 'us-west1', label: 'US West (Oregon)' },
-  { value: 'us-west4', label: 'US West (Las Vegas)' },
-  { value: 'europe-west1', label: 'Europe West (Belgium)' },
-  { value: 'europe-west2', label: 'Europe West (London)' },
-  { value: 'europe-west3', label: 'Europe West (Frankfurt)' },
-  { value: 'europe-west4', label: 'Europe West (Netherlands)' },
-  { value: 'asia-east1', label: 'Asia East (Taiwan)' },
-  { value: 'asia-northeast1', label: 'Asia Northeast (Tokyo)' },
-  { value: 'asia-northeast3', label: 'Asia Northeast (Seoul)' },
-  { value: 'asia-south1', label: 'Asia South (Mumbai)' },
-  { value: 'asia-southeast1', label: 'Asia Southeast (Singapore)' },
-  { value: 'australia-southeast1', label: 'Australia (Sydney)' },
+// Available Gemini models from Google AI Studio
+// See: https://ai.google.dev/gemini-api/docs/models
+const GEMINI_MODELS = [
+  { value: 'gemini-3-flash-preview', label: 'Gemini 3 Flash (Preview)' },
+  { value: 'gemini-3-pro-preview', label: 'Gemini 3 Pro (Preview - Most capable)' },
+  { value: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash (Recommended)' },
+  { value: 'gemini-2.5-flash-lite', label: 'Gemini 2.5 Flash Lite (Cost-efficient)' },
+  { value: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro (Advanced reasoning)' },
+  { value: 'gemini-2.0-flash', label: 'Gemini 2.0 Flash' },
 ];
 
 interface SettingsData {
-  gcpProjectId: string;
-  gcpRegion: string;
+  geminiApiKey: string;
+  geminiModel: string;
 }
 
-const DEFAULT_REGION = 'us-central1';
+const DEFAULT_MODEL = 'gemini-2.5-flash';
 
 const STORE_OPTIONS = {
-  defaults: { gcpProjectId: '', gcpRegion: DEFAULT_REGION } as Record<string, unknown>,
+  defaults: { geminiApiKey: '', geminiModel: DEFAULT_MODEL } as Record<string, unknown>,
   autoSave: true,
 };
 
@@ -63,18 +56,18 @@ async function loadSettingsFromStore(): Promise<SettingsData> {
   try {
     const store = await load(STORE_FILE, STORE_OPTIONS);
     return {
-      gcpProjectId: (await store.get<string>('gcpProjectId')) || '',
-      gcpRegion: (await store.get<string>('gcpRegion')) || DEFAULT_REGION,
+      geminiApiKey: (await store.get<string>('geminiApiKey')) || '',
+      geminiModel: (await store.get<string>('geminiModel')) || DEFAULT_MODEL,
     };
   } catch {
-    return { gcpProjectId: '', gcpRegion: DEFAULT_REGION };
+    return { geminiApiKey: '', geminiModel: DEFAULT_MODEL };
   }
 }
 
 async function saveSettingsToStore(settings: SettingsData): Promise<void> {
   const store = await load(STORE_FILE, STORE_OPTIONS);
-  await store.set('gcpProjectId', settings.gcpProjectId);
-  await store.set('gcpRegion', settings.gcpRegion);
+  await store.set('geminiApiKey', settings.geminiApiKey);
+  await store.set('geminiModel', settings.geminiModel);
   await store.save();
 }
 
@@ -89,8 +82,8 @@ export function SettingsDialog({
   onOpenChange,
   onSettingsSaved,
 }: SettingsDialogProps) {
-  const [gcpProjectId, setGcpProjectId] = useState('');
-  const [gcpRegion, setGcpRegion] = useState(DEFAULT_REGION);
+  const [geminiApiKey, setGeminiApiKey] = useState('');
+  const [geminiModel, setGeminiModel] = useState(DEFAULT_MODEL);
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -109,8 +102,8 @@ export function SettingsDialog({
 
     try {
       const settings = await loadSettingsFromStore();
-      setGcpProjectId(settings.gcpProjectId);
-      setGcpRegion(settings.gcpRegion);
+      setGeminiApiKey(settings.geminiApiKey);
+      setGeminiModel(settings.geminiModel);
     } catch (err) {
       setError('Failed to load settings');
       console.error('Failed to load settings:', err);
@@ -125,9 +118,20 @@ export function SettingsDialog({
     setSaveSuccess(false);
 
     try {
+      // Validate API key first
+      const validation = await invoke<{ valid: boolean; error?: string }>('validate_gemini_api_key', {
+        apiKey: geminiApiKey.trim(),
+      });
+
+      if (!validation.valid) {
+        setError(validation.error || 'Invalid API key');
+        setIsSaving(false);
+        return;
+      }
+
       await saveSettingsToStore({
-        gcpProjectId: gcpProjectId.trim(),
-        gcpRegion,
+        geminiApiKey: geminiApiKey.trim(),
+        geminiModel,
       });
       setSaveSuccess(true);
       onSettingsSaved?.();
@@ -141,7 +145,7 @@ export function SettingsDialog({
     } finally {
       setIsSaving(false);
     }
-  }, [gcpProjectId, gcpRegion, onOpenChange, onSettingsSaved]);
+  }, [geminiApiKey, geminiModel, onOpenChange, onSettingsSaved]);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -162,48 +166,57 @@ export function SettingsDialog({
           </div>
         ) : (
           <div className="space-y-4">
-            {/* GCP Project ID */}
+            {/* Gemini API Key */}
             <div className="space-y-2">
-              <label htmlFor="gcpProjectId" className="text-sm font-medium text-zinc-300">
-                Google Cloud Project ID
+              <label htmlFor="geminiApiKey" className="text-sm font-medium text-zinc-300">
+                Gemini API Key
               </label>
               <Input
-                id="gcpProjectId"
-                type="text"
-                placeholder="my-gcp-project-id"
-                value={gcpProjectId}
-                onChange={(e) => setGcpProjectId(e.target.value)}
+                id="geminiApiKey"
+                type="password"
+                placeholder="AIza..."
+                value={geminiApiKey}
+                onChange={(e) => setGeminiApiKey(e.target.value)}
                 className="bg-zinc-950 border-zinc-700 text-zinc-200 placeholder:text-zinc-600 font-mono"
                 disabled={isSaving}
               />
               <p className="text-xs text-zinc-500">
-                Required for Gemini chat. Find your project ID in the Google Cloud Console.
+                Get a free API key from{' '}
+                <a
+                  href="https://aistudio.google.com/apikey"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-blue-400 hover:underline"
+                >
+                  Google AI Studio
+                </a>
+                . No billing required.
               </p>
             </div>
 
-            {/* GCP Region */}
+            {/* Gemini Model */}
             <div className="space-y-2">
-              <label htmlFor="gcpRegion" className="text-sm font-medium text-zinc-300">
-                Vertex AI Region
+              <label htmlFor="geminiModel" className="text-sm font-medium text-zinc-300">
+                Gemini Model
               </label>
-              <Select value={gcpRegion} onValueChange={setGcpRegion} disabled={isSaving}>
+              <Select value={geminiModel} onValueChange={setGeminiModel} disabled={isSaving}>
                 <SelectTrigger className="bg-zinc-950 border-zinc-700 text-zinc-200">
-                  <SelectValue placeholder="Select a region" />
+                  <SelectValue placeholder="Select a model" />
                 </SelectTrigger>
                 <SelectContent className="bg-zinc-900 border-zinc-700">
-                  {GCP_REGIONS.map((region) => (
+                  {GEMINI_MODELS.map((model) => (
                     <SelectItem
-                      key={region.value}
-                      value={region.value}
+                      key={model.value}
+                      value={model.value}
                       className="text-zinc-200 focus:bg-zinc-800"
                     >
-                      {region.label}
+                      {model.label}
                     </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
               <p className="text-xs text-zinc-500">
-                Choose a region close to you for lower latency.
+                Choose the AI model for chat. Flash models are faster, Pro is more capable.
               </p>
             </div>
 
@@ -236,7 +249,7 @@ export function SettingsDialog({
               <Button
                 onClick={handleSave}
                 className="bg-blue-600 hover:bg-blue-700"
-                disabled={isSaving || !gcpProjectId.trim()}
+                disabled={isSaving || !geminiApiKey.trim()}
               >
                 {isSaving ? (
                   <>
@@ -255,7 +268,7 @@ export function SettingsDialog({
   );
 }
 
-// Hook to check if GCP Project ID is configured
+// Hook to check if Gemini API key is configured
 export function useSettingsCheck() {
   const [isConfigured, setIsConfigured] = useState<boolean | null>(null);
   const [isChecking, setIsChecking] = useState(true);
@@ -264,7 +277,7 @@ export function useSettingsCheck() {
     setIsChecking(true);
     try {
       const settings = await loadSettingsFromStore();
-      setIsConfigured(!!settings.gcpProjectId && settings.gcpProjectId.trim() !== '');
+      setIsConfigured(!!settings.geminiApiKey && settings.geminiApiKey.trim() !== '');
     } catch {
       setIsConfigured(false);
     } finally {

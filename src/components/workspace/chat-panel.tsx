@@ -5,33 +5,83 @@
 // Gemini chat interface with context awareness
 // ============================================================================
 
-import { useState, useRef, useEffect } from 'react';
-import { ChatMessage, ADR } from '@/types';
+import { useState, useRef, useEffect, useMemo } from 'react';
+import { ChatMessage, Spec } from '@/types';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
-import { Sparkles, Send, Loader2, User, Trash2 } from 'lucide-react';
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from '@/components/ui/tooltip';
+import { Sparkles, Send, Loader2, User, Trash2, FilePlus, AlertTriangle } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import {
+  estimateTokens,
+  formatTokenCount,
+  getContextUsagePercent,
+  getUsageColorClass,
+  isApproachingLimit,
+} from '@/lib/utils/tokens';
+import { loadSettingsFromStore } from '@/components/ide/settings-dialog';
 
 interface ChatPanelProps {
   messages: ChatMessage[];
   isLoading: boolean;
-  selectedAdr: ADR | null;
+  selectedSpec: Spec | null;
+  specContent?: string;
   onSendMessage: (content: string) => void;
   onClearHistory: () => void;
+  onGenSpec: () => void;
+  isGeneratingSpec: boolean;
 }
 
 export function ChatPanel({
   messages,
   isLoading,
-  selectedAdr,
+  selectedSpec,
+  specContent,
   onSendMessage,
   onClearHistory,
+  onGenSpec,
+  isGeneratingSpec,
 }: ChatPanelProps) {
   const [input, setInput] = useState('');
+  const [geminiModel, setGeminiModel] = useState('gemini-2.5-flash');
   const scrollRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  // Load settings to get the current model
+  useEffect(() => {
+    loadSettingsFromStore().then((settings) => {
+      setGeminiModel(settings.geminiModel);
+    });
+  }, []);
+
+  // Calculate total tokens from messages + input + spec content
+  const tokenInfo = useMemo(() => {
+    const messageTokens = messages.reduce(
+      (sum, msg) => sum + estimateTokens(msg.content),
+      0
+    );
+    const inputTokens = estimateTokens(input);
+    const specTokens = specContent ? estimateTokens(specContent) : 0;
+    const totalTokens = messageTokens + inputTokens + specTokens;
+    const usagePercent = getContextUsagePercent(totalTokens, geminiModel);
+    const colorClass = getUsageColorClass(usagePercent);
+    const approaching = isApproachingLimit(totalTokens, geminiModel);
+
+    return {
+      totalTokens,
+      usagePercent,
+      colorClass,
+      approaching,
+      formatted: formatTokenCount(totalTokens),
+    };
+  }, [messages, input, specContent, geminiModel]);
 
   // Auto-scroll to bottom on new messages
   useEffect(() => {
@@ -54,36 +104,64 @@ export function ChatPanel({
     }
   };
 
+  const canGenSpec = messages.length > 0 && !isLoading && !isGeneratingSpec;
+
   return (
     <div className="h-full flex flex-col bg-zinc-950">
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-2 border-b border-zinc-800 bg-zinc-900">
         <div className="flex items-center gap-2">
           <Sparkles className="h-4 w-4 text-blue-400" />
-          <span className="text-sm font-medium text-zinc-300">Gemini Assistant</span>
-          {selectedAdr && (
+          <span className="text-sm font-medium text-zinc-300">Design Assistant</span>
+          {selectedSpec && (
             <Badge variant="outline" className="text-xs bg-zinc-800 border-zinc-700 text-zinc-400">
-              Context: {selectedAdr.title}
+              Editing: {selectedSpec.title}
             </Badge>
           )}
         </div>
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={onClearHistory}
-          className="h-7 text-zinc-500 hover:text-zinc-300"
-          disabled={messages.length === 0}
-        >
-          <Trash2 className="h-3 w-3 mr-1" />
-          Clear
-        </Button>
+        <div className="flex items-center gap-2">
+          {/* Token Counter Badge */}
+          <TooltipProvider>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Badge
+                  variant="outline"
+                  className={cn('text-xs font-mono', tokenInfo.colorClass)}
+                >
+                  {tokenInfo.formatted} tokens
+                </Badge>
+              </TooltipTrigger>
+              <TooltipContent>
+                <p>{tokenInfo.usagePercent.toFixed(1)}% of context used</p>
+              </TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={onClearHistory}
+            className="h-7 text-zinc-500 hover:text-zinc-300"
+            disabled={messages.length === 0}
+          >
+            <Trash2 className="h-3 w-3 mr-1" />
+            Clear
+          </Button>
+        </div>
       </div>
+
+      {/* Context Limit Warning */}
+      {tokenInfo.approaching && (
+        <div className="flex items-center gap-2 px-4 py-2 bg-red-950/30 border-b border-red-900/50 text-red-400 text-xs">
+          <AlertTriangle className="h-3 w-3" />
+          <span>Approaching context limit ({tokenInfo.usagePercent.toFixed(0)}%). Consider clearing history.</span>
+        </div>
+      )}
 
       {/* Messages */}
       <ScrollArea className="flex-1" ref={scrollRef}>
         <div className="p-4 space-y-4">
           {messages.length === 0 ? (
-            <EmptyState selectedAdr={selectedAdr} />
+            <EmptyState />
           ) : (
             messages.map((message, index) => (
               <MessageBubble key={index} message={message} />
@@ -106,7 +184,7 @@ export function ChatPanel({
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="Ask Gemini about your spec..."
+            placeholder="Describe the feature you want to build..."
             className={`
               flex-1 min-h-[60px] max-h-[150px] resize-none
               bg-zinc-950 border-zinc-700
@@ -114,20 +192,50 @@ export function ChatPanel({
               text-sm
               focus-visible:ring-1 focus-visible:ring-zinc-600
             `}
-            disabled={isLoading}
+            disabled={isLoading || isGeneratingSpec}
           />
-          <Button
-            type="submit"
-            size="icon"
-            className="h-[60px] w-[60px] bg-blue-600 hover:bg-blue-700"
-            disabled={!input.trim() || isLoading}
-          >
-            {isLoading ? (
-              <Loader2 className="h-5 w-5 animate-spin" />
-            ) : (
-              <Send className="h-5 w-5" />
-            )}
-          </Button>
+          <div className="flex flex-col gap-2">
+            <TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    type="button"
+                    size="icon"
+                    variant="outline"
+                    className={cn(
+                      'h-[28px] w-[60px] border-zinc-700',
+                      canGenSpec
+                        ? 'bg-green-600 hover:bg-green-700 border-green-600 text-white'
+                        : 'text-zinc-500'
+                    )}
+                    disabled={!canGenSpec}
+                    onClick={onGenSpec}
+                  >
+                    {isGeneratingSpec ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <FilePlus className="h-4 w-4" />
+                    )}
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent side="left">
+                  <p>Generate Spec from chat</p>
+                </TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
+            <Button
+              type="submit"
+              size="icon"
+              className="h-[28px] w-[60px] bg-blue-600 hover:bg-blue-700"
+              disabled={!input.trim() || isLoading || isGeneratingSpec}
+            >
+              {isLoading ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Send className="h-4 w-4" />
+              )}
+            </Button>
+          </div>
         </div>
         <p className="text-xs text-zinc-600 mt-2">
           Press Enter to send, Shift+Enter for new line
@@ -172,21 +280,15 @@ function MessageBubble({ message }: MessageBubbleProps) {
   );
 }
 
-interface EmptyStateProps {
-  selectedAdr: ADR | null;
-}
-
-function EmptyState({ selectedAdr }: EmptyStateProps) {
+function EmptyState() {
   return (
     <div className="flex flex-col items-center justify-center h-full min-h-[200px] text-center">
       <Sparkles className="h-12 w-12 text-zinc-700 mb-4" />
       <h3 className="text-sm font-medium text-zinc-400 mb-2">
-        Gemini Assistant
+        Design Assistant
       </h3>
       <p className="text-xs text-zinc-600 max-w-xs">
-        {selectedAdr
-          ? `Ask questions about your spec in the context of "${selectedAdr.title}"`
-          : 'Ask questions about your specification, get implementation advice, or validate your requirements.'}
+        Describe the feature you want to build. When you&apos;re ready, click the green button to generate a spec.
       </p>
     </div>
   );

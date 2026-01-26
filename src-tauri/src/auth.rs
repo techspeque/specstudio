@@ -1,8 +1,8 @@
 // ============================================================================
 // OAuth Authentication Module
-// Handles Google and Anthropic OAuth for API access
+// Handles Google OAuth for API access
 // Uses local HTTP server for OAuth callback
-// Credentials are bundled via environment variables at build time
+// Credentials are stored in user settings (configured during first launch)
 // ============================================================================
 
 use serde::{Deserialize, Serialize};
@@ -18,26 +18,27 @@ const GOOGLE_AUTH_URL: &str = "https://accounts.google.com/o/oauth2/v2/auth";
 const GOOGLE_TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
 const GOOGLE_SCOPES: &str = "https://www.googleapis.com/auth/cloud-platform";
 
-// Anthropic OAuth (using their console OAuth)
-const ANTHROPIC_AUTH_URL: &str = "https://console.anthropic.com/oauth/authorize";
-const ANTHROPIC_TOKEN_URL: &str = "https://console.anthropic.com/oauth/token";
+/// Get Google OAuth credentials from user settings
+fn get_google_credentials_from_store(app: &AppHandle) -> Result<(String, String), String> {
+    let store = app
+        .store("settings.json")
+        .map_err(|e| format!("Failed to open settings store: {}", e))?;
 
-// Bundled OAuth credentials (set via environment variables at build time)
-// If not set, they default to empty strings and auth will return an error
-fn get_google_client_id() -> &'static str {
-    option_env!("GOOGLE_CLIENT_ID").unwrap_or("")
-}
+    let client_id = store
+        .get("googleClientId")
+        .and_then(|v| v.as_str().map(|s| s.to_string()))
+        .ok_or("Google Client ID not configured. Please complete the setup wizard.")?;
 
-fn get_google_client_secret() -> &'static str {
-    option_env!("GOOGLE_CLIENT_SECRET").unwrap_or("")
-}
+    let client_secret = store
+        .get("googleClientSecret")
+        .and_then(|v| v.as_str().map(|s| s.to_string()))
+        .ok_or("Google Client Secret not configured. Please complete the setup wizard.")?;
 
-fn get_anthropic_client_id() -> &'static str {
-    option_env!("ANTHROPIC_CLIENT_ID").unwrap_or("")
-}
+    if client_id.is_empty() || client_secret.is_empty() {
+        return Err("Google OAuth credentials not configured. Please complete the setup wizard.".to_string());
+    }
 
-fn get_anthropic_client_secret() -> &'static str {
-    option_env!("ANTHROPIC_CLIENT_SECRET").unwrap_or("")
+    Ok((client_id, client_secret))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -67,103 +68,168 @@ pub struct AuthStatusResponse {
     pub anthropic: bool,
 }
 
+/// Check if Google OAuth credentials are configured in settings
+#[tauri::command]
+pub fn check_google_oauth_configured(app: AppHandle) -> bool {
+    get_google_credentials_from_store(&app).is_ok()
+}
+
 // ============================================================================
 // Google OAuth
 // ============================================================================
 
-/// Start Google OAuth flow - opens browser and waits for callback
 #[tauri::command]
 pub async fn start_google_oauth(app: AppHandle) -> Result<AuthResult, String> {
-    let client_id = get_google_client_id();
-    let client_secret = get_google_client_secret();
-
-    if client_id.is_empty() {
-        return Err("Google OAuth not configured. Build with GOOGLE_CLIENT_ID environment variable.".to_string());
-    }
+    let (client_id, client_secret) = get_google_credentials_from_store(&app)?;
 
     run_oauth_flow(
         &app,
         "google",
         GOOGLE_AUTH_URL,
         GOOGLE_TOKEN_URL,
-        client_id,
-        client_secret,
+        &client_id,
+        &client_secret,
         GOOGLE_SCOPES,
     )
     .await
 }
 
-/// Check if we have valid Google credentials
 #[tauri::command]
 pub async fn check_google_auth(app: AppHandle) -> Result<bool, String> {
     check_auth(&app, "google").await
 }
 
-/// Get the current Google access token (refreshing if needed)
 #[tauri::command]
 pub async fn get_google_access_token(app: AppHandle) -> Result<String, String> {
     get_access_token(&app, "google", GOOGLE_TOKEN_URL).await
 }
 
-/// Clear stored Google credentials (logout)
 #[tauri::command]
 pub async fn logout_google(app: AppHandle) -> Result<(), String> {
     logout(&app, "google").await
 }
 
 // ============================================================================
-// Anthropic OAuth
+// Claude Code CLI Authentication
+// Uses `claude auth status` and `claude auth login` commands
 // ============================================================================
 
-/// Start Anthropic OAuth flow - opens browser and waits for callback
+/// Check if Claude Code CLI is authenticated by running `claude auth status`
+#[tauri::command]
+pub async fn check_anthropic_auth() -> Result<bool, String> {
+    use std::process::Command;
+
+    let output = Command::new("claude")
+        .args(["auth", "status"])
+        .output()
+        .map_err(|e| format!("Failed to run claude auth status: {}", e))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let combined = format!("{}{}", stdout, stderr);
+
+    // Check for authenticated indicators in output
+    // Claude CLI outputs "Logged in as..." or similar when authenticated
+    let is_authenticated = combined.contains("Logged in")
+        || combined.contains("logged in")
+        || combined.contains("Authenticated")
+        || combined.contains("authenticated")
+        || (output.status.success() && !combined.contains("not logged in") && !combined.contains("Not logged in"));
+
+    Ok(is_authenticated)
+}
+
+/// Start Claude Code CLI OAuth by running `claude auth login`
+/// This opens a browser for the user to authenticate
 #[tauri::command]
 pub async fn start_anthropic_oauth(app: AppHandle) -> Result<AuthResult, String> {
-    let client_id = get_anthropic_client_id();
-    let client_secret = get_anthropic_client_secret();
+    use std::process::Command;
 
-    if client_id.is_empty() {
-        return Err("Anthropic OAuth not configured. Build with ANTHROPIC_CLIENT_ID environment variable.".to_string());
+    let _ = app.emit(
+        "auth:status",
+        AuthEvent {
+            provider: "anthropic".to_string(),
+            status: "pending".to_string(),
+            message: "Opening browser for Claude authentication...".to_string(),
+        },
+    );
+
+    // Run claude auth login - this will open browser and wait for completion
+    let output = Command::new("claude")
+        .args(["auth", "login"])
+        .output()
+        .map_err(|e| format!("Failed to run claude auth login: {}", e))?;
+
+    if output.status.success() {
+        let _ = app.emit(
+            "auth:status",
+            AuthEvent {
+                provider: "anthropic".to_string(),
+                status: "authenticated".to_string(),
+                message: "Successfully authenticated with Claude".to_string(),
+            },
+        );
+
+        Ok(AuthResult {
+            success: true,
+            provider: "anthropic".to_string(),
+            message: "Successfully authenticated with Claude Code CLI".to_string(),
+        })
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let error_msg = if stderr.is_empty() {
+            "Authentication failed or was cancelled".to_string()
+        } else {
+            stderr.to_string()
+        };
+
+        let _ = app.emit(
+            "auth:status",
+            AuthEvent {
+                provider: "anthropic".to_string(),
+                status: "error".to_string(),
+                message: error_msg.clone(),
+            },
+        );
+
+        Err(error_msg)
     }
-
-    run_oauth_flow(
-        &app,
-        "anthropic",
-        ANTHROPIC_AUTH_URL,
-        ANTHROPIC_TOKEN_URL,
-        client_id,
-        client_secret,
-        "api",
-    )
-    .await
 }
 
-/// Check if we have valid Anthropic credentials
-#[tauri::command]
-pub async fn check_anthropic_auth(app: AppHandle) -> Result<bool, String> {
-    check_auth(&app, "anthropic").await
-}
-
-/// Get the current Anthropic access token (refreshing if needed)
-#[tauri::command]
-pub async fn get_anthropic_access_token(app: AppHandle) -> Result<String, String> {
-    get_access_token(&app, "anthropic", ANTHROPIC_TOKEN_URL).await
-}
-
-/// Clear stored Anthropic credentials (logout)
+/// Logout from Claude Code CLI by running `claude auth logout`
 #[tauri::command]
 pub async fn logout_anthropic(app: AppHandle) -> Result<(), String> {
-    logout(&app, "anthropic").await
+    use std::process::Command;
+
+    let output = Command::new("claude")
+        .args(["auth", "logout"])
+        .output()
+        .map_err(|e| format!("Failed to run claude auth logout: {}", e))?;
+
+    if output.status.success() {
+        let _ = app.emit(
+            "auth:status",
+            AuthEvent {
+                provider: "anthropic".to_string(),
+                status: "logged_out".to_string(),
+                message: "Successfully logged out of Claude".to_string(),
+            },
+        );
+        Ok(())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        Err(format!("Logout failed: {}", stderr))
+    }
 }
 
 // ============================================================================
 // Combined Auth Status
 // ============================================================================
 
-/// Check auth status for all providers
 #[tauri::command]
 pub async fn check_all_auth(app: AppHandle) -> Result<AuthStatusResponse, String> {
     let google = check_auth(&app, "google").await.unwrap_or(false);
-    let anthropic = check_auth(&app, "anthropic").await.unwrap_or(false);
+    let anthropic = check_anthropic_auth().await.unwrap_or(false);
 
     Ok(AuthStatusResponse { google, anthropic })
 }
@@ -191,7 +257,6 @@ async fn run_oauth_flow(
         urlencoding::encode(scopes)
     );
 
-    // Emit event that auth is starting
     let _ = app.emit(
         "auth:status",
         AuthEvent {
@@ -201,29 +266,24 @@ async fn run_oauth_flow(
         },
     );
 
-    // Start local server to receive OAuth callback
     let listener = TcpListener::bind(format!("127.0.0.1:{}", OAUTH_CALLBACK_PORT))
         .await
         .map_err(|e| format!("Failed to start OAuth callback server: {}", e))?;
 
-    // Open browser to auth URL
     open::that(&full_auth_url).map_err(|e| format!("Failed to open browser: {}", e))?;
 
-    // Store values for async block
     let app_handle = app.clone();
     let provider_str = provider.to_string();
     let token_url_str = token_url.to_string();
     let client_id_str = client_id.to_string();
     let client_secret_str = client_secret.to_string();
 
-    // Wait for callback (with timeout)
     let result = tokio::time::timeout(std::time::Duration::from_secs(300), async {
         let (mut socket, _) = listener
             .accept()
             .await
             .map_err(|e| format!("Failed to accept connection: {}", e))?;
 
-        // Read the HTTP request
         let mut buffer = [0; 4096];
         let n = socket
             .read(&mut buffer)
@@ -231,11 +291,8 @@ async fn run_oauth_flow(
             .map_err(|e| format!("Failed to read request: {}", e))?;
 
         let request = String::from_utf8_lossy(&buffer[..n]);
-
-        // Extract the authorization code from the request
         let code = extract_code_from_request(&request)?;
 
-        // Send success response to browser
         let response = format!(
             "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n<html><body style=\"font-family: system-ui; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; background: #18181b; color: #fafafa;\"><div style=\"text-align: center;\"><h1>Authentication Successful!</h1><p>You can close this window and return to SpecStudio.</p></div></body></html>"
         );
@@ -244,7 +301,6 @@ async fn run_oauth_flow(
             .await
             .map_err(|e| format!("Failed to send response: {}", e))?;
 
-        // Exchange code for tokens
         let tokens = exchange_code_for_tokens(
             &code,
             &client_id_str,
@@ -254,7 +310,6 @@ async fn run_oauth_flow(
         )
         .await?;
 
-        // Store credentials
         store_credentials(&app_handle, &provider_str, &tokens).await?;
 
         Ok::<AuthResult, String>(AuthResult {
@@ -305,14 +360,12 @@ async fn run_oauth_flow(
 async fn check_auth(app: &AppHandle, provider: &str) -> Result<bool, String> {
     match load_credentials(app, provider).await {
         Ok(Some(creds)) => {
-            // Check if token is expired
             if let Some(expires_at) = creds.expires_at {
                 let now = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap()
                     .as_secs() as i64;
                 if now >= expires_at {
-                    // Token expired - can refresh if we have refresh token
                     return Ok(creds.refresh_token.is_some());
                 }
             }
@@ -328,7 +381,6 @@ async fn get_access_token(app: &AppHandle, provider: &str, token_url: &str) -> R
         .await?
         .ok_or(format!("Not authenticated with {}", provider))?;
 
-    // Check if token is expired
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
@@ -336,16 +388,12 @@ async fn get_access_token(app: &AppHandle, provider: &str, token_url: &str) -> R
 
     if let Some(expires_at) = creds.expires_at {
         if now >= expires_at - 60 {
-            // Expired or expiring soon - refresh
             if let Some(refresh_token) = creds.refresh_token {
-                let (client_id, client_secret) = if provider == "google" {
-                    (get_google_client_id(), get_google_client_secret())
-                } else {
-                    (get_anthropic_client_id(), get_anthropic_client_secret())
-                };
+                // Get credentials from settings store
+                let (client_id, client_secret) = get_google_credentials_from_store(app)?;
 
                 let new_creds =
-                    refresh_access_token(&refresh_token, client_id, client_secret, token_url).await?;
+                    refresh_access_token(&refresh_token, &client_id, &client_secret, token_url).await?;
                 store_credentials(app, provider, &new_creds).await?;
                 return Ok(new_creds.access_token);
             }
@@ -430,7 +478,6 @@ async fn exchange_code_for_tokens(
         ("grant_type", "authorization_code"),
     ];
 
-    // Only include client_secret if it's not empty (some providers don't require it for desktop apps)
     if !client_secret.is_empty() {
         params.push(("client_secret", client_secret));
     }

@@ -96,7 +96,6 @@ export function useRpc(): UseRpcReturn {
           action,
           workingDirectory: payload.workingDirectory,
           specContent: payload.specContent,
-          adrContext: payload.adrContext,
         });
       } catch (err) {
         // Emit error event
@@ -148,9 +147,21 @@ interface ChatResult {
   sessionId: string;
 }
 
+interface FileContent {
+  path: string;
+  content: string;
+}
+
+interface WorkspaceContext {
+  files: FileContent[];
+  totalFiles: number;
+  totalSize: number;
+  truncated: boolean;
+}
+
 interface UseChatReturn {
   messages: ChatMessage[];
-  sendMessage: (content: string, specContent?: string, adrContext?: string) => Promise<void>;
+  sendMessage: (content: string, workingDirectory?: string, specContent?: string) => Promise<void>;
   clearHistory: () => void;
   isLoading: boolean;
   cancelChat: () => void;
@@ -172,7 +183,7 @@ export function useChat(): UseChatReturn {
   }, []);
 
   const sendMessage = useCallback(
-    async (content: string, specContent?: string, adrContext?: string) => {
+    async (content: string, workingDirectory?: string, specContent?: string) => {
       const userMessage: ChatMessage = { role: 'user', content };
       setMessages((prev) => [...prev, userMessage]);
       setIsLoading(true);
@@ -187,6 +198,28 @@ export function useChat(): UseChatReturn {
       try {
         // Add placeholder assistant message that will be updated with streaming content
         setMessages((prev) => [...prev, { role: 'assistant', content: '' }]);
+
+        // Load workspace context if working directory is provided
+        let workspaceContext = '';
+        if (workingDirectory) {
+          try {
+            const context = await invoke<WorkspaceContext>('read_workspace_context', {
+              workingDirectory,
+            });
+
+            if (context.files.length > 0) {
+              workspaceContext = '## Workspace Files\n\n';
+              for (const file of context.files) {
+                workspaceContext += `### ${file.path}\n\`\`\`\n${file.content}\n\`\`\`\n\n`;
+              }
+              if (context.truncated) {
+                workspaceContext += `\n(Note: Workspace content truncated. Showing ${context.totalFiles} files, ${Math.round(context.totalSize / 1024)}KB total)\n`;
+              }
+            }
+          } catch (err) {
+            console.warn('Failed to load workspace context:', err);
+          }
+        }
 
         // Set up event listener for streaming data
         unlistenRef.current = await listen<StreamEvent>('rpc:stream:data', (event) => {
@@ -233,12 +266,14 @@ export function useChat(): UseChatReturn {
           content: m.content,
         }));
 
+        // Combine workspace context with spec content
+        const fullContext = [workspaceContext, specContent].filter(Boolean).join('\n\n');
+
         // Start the Gemini chat
         await invoke<ChatResult>('chat_with_gemini', {
           prompt: content,
           history: historyForGemini,
-          specContent,
-          adrContext,
+          specContent: fullContext || undefined,
         });
       } catch (err) {
         // Update the assistant message with error
