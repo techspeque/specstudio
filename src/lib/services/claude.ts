@@ -98,18 +98,16 @@ export function streamClaudeCode(
  */
 export async function generateCode(
   specContent: string,
-  adrContext?: string,
   workingDirectory?: string
 ): Promise<{ output: string; error: string; exitCode: number }> {
   const prompt = `You are implementing code based on the following specification.
 
-${adrContext ? `## Architecture Context (ADR)\n${adrContext}\n\n` : ''}
 ## Specification
 ${specContent}
 
 ## Instructions
 1. Implement the code according to the specification
-2. Follow best practices and the architectural decisions outlined above
+2. Follow best practices
 3. Create necessary files and directories
 4. Do NOT commit any changes - git operations are handled manually by the user`;
 
@@ -121,12 +119,10 @@ ${specContent}
  */
 export async function generateTests(
   specContent: string,
-  adrContext?: string,
   workingDirectory?: string
 ): Promise<{ output: string; error: string; exitCode: number }> {
   const prompt = `You are generating tests based on the following specification.
 
-${adrContext ? `## Architecture Context (ADR)\n${adrContext}\n\n` : ''}
 ## Specification
 ${specContent}
 

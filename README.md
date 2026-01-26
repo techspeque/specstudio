@@ -14,7 +14,6 @@ SpecStudio is a native desktop IDE designed for **Spec-Driven Development** — 
 
 - **Workspace Management** — Manage multiple project workspaces with native OS folder picker
 - **Spec Editor** — Write and edit specifications with auto-save
-- **ADR Context** — Load Architecture Decision Records to guide AI responses
 - **Gemini Chat** — Context-aware AI assistant for discussing your specs
 - **Claude Code Generation** — Generate production code and tests from specs
 - **Streaming Output** — Real-time console output with interactive input
@@ -116,11 +115,7 @@ Implement JWT-based authentication with refresh tokens.
 - [ ] Refresh tokens last 7 days
 ```
 
-### 5. Load ADR Context (Optional)
-
-Click an Architecture Decision Record in the left sidebar to provide context for AI operations. ADRs are loaded from `docs/adr/` in your workspace.
-
-### 6. Use AI Actions
+### 5. Use AI Actions
 
 The control bar provides these actions:
 
@@ -132,13 +127,13 @@ The control bar provides these actions:
 | **Run Tests** | Executes `npm test` in your workspace |
 | **Run App** | Starts `npm run dev` in your workspace |
 
-### 7. Interactive Console
+### 6. Interactive Console
 
 When Claude Code runs, you can interact with it via the console input at the bottom. Type responses and press Enter to send input.
 
-### 8. Chat with Gemini
+### 7. Chat with Gemini
 
-Use the chat panel to discuss your spec, ask questions, or refine requirements. The selected ADR provides context for all conversations.
+Use the chat panel to discuss your spec, ask questions, or refine requirements.
 
 ## Project Structure
 
@@ -182,30 +177,6 @@ specstudio/
 | `bun tauri:dev` | Start Tauri + Next.js dev server |
 | `bun tauri:build` | Build Tauri app for current platform |
 | `bun lint` | Run ESLint |
-
-## ADR Format
-
-Place your Architecture Decision Records in `docs/adr/` within your workspace:
-
-```markdown
----
-title: Use TypeScript for Type Safety
-status: accepted
----
-
-# ADR-001: Use TypeScript for Type Safety
-
-## Context
-We need consistent type safety across the codebase...
-
-## Decision
-We will use TypeScript in strict mode...
-
-## Consequences
-- Better IDE support and autocompletion
-- Compile-time error detection
-- Slightly longer build times
-```
 
 ## Git Control
 

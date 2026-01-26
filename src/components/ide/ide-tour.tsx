@@ -36,20 +36,14 @@ const tourSteps: Step[] = [
     placement: 'right',
   },
   {
-    target: '#adr-sidebar',
-    title: '3. Contextual Memory',
-    content: 'These are your Architecture Decision Records (ADRs). Click one to inject its context into the AI\'s memory before generating code.',
-    placement: 'right',
-  },
-  {
     target: '#control-bar-actions',
-    title: '4. The Automation Loop',
+    title: '3. The Automation Loop',
     content: 'Click "Validate" for an architecture review. Click "Create Code" to let Claude implement the spec. Click "Gen Tests" to bulletproof it.',
     placement: 'bottom',
   },
   {
     target: '#console-output',
-    title: '5. Real-Time Execution',
+    title: '4. Real-Time Execution',
     content: 'Watch Claude Code operate your terminal in real-time here. Happy building!',
     placement: 'top',
   },

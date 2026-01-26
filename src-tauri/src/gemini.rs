@@ -156,7 +156,6 @@ pub async fn chat_with_gemini(
     prompt: String,
     history: Option<Vec<ChatMessage>>,
     spec_content: Option<String>,
-    adr_context: Option<String>,
 ) -> Result<ChatResult, String> {
     let session_id = format!("chat_{}", get_timestamp());
 
@@ -169,12 +168,6 @@ pub async fn chat_with_gemini(
     if let Some(spec) = &spec_content {
         system_context.push_str("## Current Specification\n");
         system_context.push_str(spec);
-        system_context.push_str("\n\n");
-    }
-
-    if let Some(adr) = &adr_context {
-        system_context.push_str("## Architecture Decision Records\n");
-        system_context.push_str(adr);
         system_context.push_str("\n\n");
     }
 

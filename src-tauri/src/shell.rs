@@ -172,30 +172,26 @@ fn stream_stderr(mut stderr: ChildStderr, app: AppHandle) {
 }
 
 /// Build the prompt for Claude based on action type
-fn build_prompt(action: &str, spec_content: &str, adr_context: Option<&str>) -> String {
-    let adr_section = adr_context
-        .map(|ctx| format!("## Architecture Context (ADR)\n{}\n\n", ctx))
-        .unwrap_or_default();
-
+fn build_prompt(action: &str, spec_content: &str) -> String {
     if action == "create_code" {
         format!(
             r#"You are implementing code based on the following specification.
 
-{}## Specification
+## Specification
 {}
 
 ## Instructions
 1. Implement the code according to the specification
-2. Follow best practices and the architectural decisions outlined above
+2. Follow best practices
 3. Create necessary files and directories
 4. Do NOT commit any changes - git operations are handled manually by the user"#,
-            adr_section, spec_content
+            spec_content
         )
     } else {
         format!(
             r#"You are generating tests based on the following specification.
 
-{}## Specification
+## Specification
 {}
 
 ## Instructions
@@ -203,7 +199,7 @@ fn build_prompt(action: &str, spec_content: &str, adr_context: Option<&str>) -> 
 2. Include unit tests, integration tests where appropriate
 3. Follow the testing conventions established in the project
 4. Do NOT commit any changes - git operations are handled manually by the user"#,
-            adr_section, spec_content
+            spec_content
         )
     }
 }
@@ -218,7 +214,6 @@ pub fn spawn_streaming_process(
     action: String,
     working_directory: Option<String>,
     spec_content: Option<String>,
-    adr_context: Option<String>,
 ) -> Result<SpawnResult, String> {
     let cwd = working_directory
         .map(PathBuf::from)
@@ -234,7 +229,7 @@ pub fn spawn_streaming_process(
     match action.as_str() {
         "create_code" | "gen_tests" => {
             let spec = spec_content.ok_or("specContent is required for this action")?;
-            let prompt = build_prompt(&action, &spec, adr_context.as_deref());
+            let prompt = build_prompt(&action, &spec);
 
             // Write prompt to temp file
             let temp_dir = std::env::temp_dir();

@@ -308,7 +308,6 @@ Analyze the conversation and generate a complete specification now.`;
         prompt: synthesisPrompt,
         history: messages.map((m) => ({ role: m.role, content: m.content })),
         specContent: undefined,
-        adrContext: undefined,
       });
     } catch (err) {
       appendConsoleOutput({
