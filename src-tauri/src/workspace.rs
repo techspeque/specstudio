@@ -313,6 +313,14 @@ pub fn delete_spec(filename: String, working_directory: Option<String>) -> Resul
     fs::remove_file(&spec_path)
         .map_err(|e| format!("Failed to delete spec file: {}", e))?;
 
+    // Also delete companion plan file if it exists (prevent orphaned plans)
+    let plan_filename = filename.replace(".md", ".plan.json");
+    let plan_path = specs_dir.join(&plan_filename);
+    if plan_path.exists() {
+        let _ = fs::remove_file(&plan_path); // Ignore errors if plan doesn't exist
+        println!("[delete_spec] Cleaned up companion plan file: {}", plan_filename);
+    }
+
     Ok(SaveResult { success: true })
 }
 

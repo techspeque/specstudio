@@ -35,6 +35,7 @@
     "react": "19.2.3",
     "react-diff-viewer-continued": "^3.4.0",
     "react-dom": "19.2.3",
+    "react-markdown": "^10.1.0",
     "react-resizable-panels": "^4.5.1",
     "strip-ansi": "^7.1.2",
     "tailwind-merge": "^3.4.0"

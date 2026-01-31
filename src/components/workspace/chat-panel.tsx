@@ -27,6 +27,7 @@ import {
   isApproachingLimit,
 } from '@/lib/utils/tokens';
 import { loadSettingsFromStore } from '@/components/ide/settings-dialog';
+import ReactMarkdown from 'react-markdown';
 
 interface ChatPanelProps {
   messages: ChatMessage[];
@@ -274,7 +275,13 @@ function MessageBubble({ message }: MessageBubbleProps) {
             : 'bg-zinc-900 border border-zinc-800 text-zinc-300'
         )}
       >
-        <div className="whitespace-pre-wrap">{message.content}</div>
+        {isUser ? (
+          <div className="whitespace-pre-wrap">{message.content}</div>
+        ) : (
+          <div className="prose prose-invert prose-sm max-w-none">
+            <ReactMarkdown>{message.content}</ReactMarkdown>
+          </div>
+        )}
       </div>
     </div>
   );

@@ -14,8 +14,32 @@ mod workspace;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    use tauri_plugin_log::{Target, TargetKind, RotationStrategy};
+    use std::fs;
+
+    // Create centralized log directory in ~/.specstudio/logs
+    let home_dir = dirs::home_dir().expect("Could not resolve home directory");
+    let log_dir = home_dir.join(".specstudio").join("logs");
+
+    // Ensure the log directory exists
+    if let Err(e) = fs::create_dir_all(&log_dir) {
+        eprintln!("Warning: Failed to create log directory: {}", e);
+    }
+
     tauri::Builder::default()
-        .plugin(tauri_plugin_log::Builder::default().build())
+        .plugin(
+            tauri_plugin_log::Builder::default()
+                .targets([
+                    Target::new(TargetKind::Stdout),
+                    Target::new(TargetKind::Folder {
+                        path: log_dir,
+                        file_name: None,
+                    }),
+                ])
+                .max_file_size(50_000) // 50KB
+                .rotation_strategy(RotationStrategy::KeepAll)
+                .build()
+        )
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_store::Builder::default().build())

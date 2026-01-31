@@ -245,6 +245,7 @@ pub fn spawn_streaming_process(
             cmd.args(["-p", temp_path.to_str().unwrap(), "--dangerously-skip-permissions"])
                 .current_dir(&cwd)
                 .env("FORCE_COLOR", "0")
+                .env("CI", "true")  // Force non-interactive mode to prevent hanging
                 .stdin(Stdio::piped())   // Enable stdin for interactive input
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped());

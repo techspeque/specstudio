@@ -923,11 +923,10 @@ If there are issues, missing requirements, or the diff is incomplete, set approv
 							})
 						}
 					} catch (diffErr) {
+						const msg = diffErr instanceof Error ? diffErr.message : String(diffErr)
 						appendConsoleOutput({
 							type: 'error',
-							data: `⚠️ Quality Gate error: ${
-								(diffErr as Error).message
-							}. Marking as done.`,
+							data: `⚠️ Quality Gate error: ${msg}. Marking as done.`,
 							timestamp: Date.now(),
 						})
 
@@ -1396,6 +1395,7 @@ If there are issues, missing requirements, or the diff is incomplete, set approv
 											content={specContent}
 											onChange={setSpecContent}
 											isSaving={isSaving}
+											filename={selectedSpec?.filename || 'Untitled.md'}
 										/>
 									) : (
 										<PlanViewer

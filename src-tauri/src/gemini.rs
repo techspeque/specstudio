@@ -290,12 +290,13 @@ pub async fn chat_with_gemini(
 You are an expert Software Architect specializing in creating comprehensive development plans.
 
 ## Your Mission
-1. Understand the user's intent and requirements through conversation
-2. Use the search_files tool to explore the existing codebase when needed
-3. Create a structured Development Plan that breaks down the work into phases and actionable tickets
+1. Discuss requirements and architecture in MARKDOWN
+2. Only generate a JSON Development Plan when the user sends the specific trigger phrase
 
 ## Output Format
-When the user asks you to create a plan, formulate it, or "make it so", you MUST output a strict JSON Development Plan with this structure:
+Default to Markdown. Only output strict JSON when the prompt specifically asks to 'Create a comprehensive development plan'.
+
+When generating JSON, use this structure:
 - title: Overall plan title
 - overview: High-level description
 - phases: Array of development phases
@@ -360,10 +361,8 @@ When the user asks you to create a plan, formulate it, or "make it so", you MUST
     });
 
     // Detect if user is requesting a plan (enable strict JSON output)
-    let requesting_plan = prompt.to_lowercase().contains("plan")
-        || prompt.to_lowercase().contains("formulate")
-        || prompt.to_lowercase().contains("make it so")
-        || prompt.to_lowercase().contains("create the spec");
+    // CRITICAL: This must match the exact phrase from ide-layout.tsx handleCreatePlan
+    let requesting_plan = prompt.contains("Create a comprehensive development plan");
 
     // Configure generation with optional strict JSON schema
     let generation_config = if requesting_plan {
@@ -382,10 +381,17 @@ When the user asks you to create a plan, formulate it, or "make it so", you MUST
         }
     };
 
+    // Tools cannot be used with JSON response mode (Gemini API limitation)
+    let tools = if requesting_plan {
+        None
+    } else {
+        Some(vec![get_search_files_tool()])
+    };
+
     let request = GeminiRequest {
         contents,
         generation_config: Some(generation_config),
-        tools: Some(vec![get_search_files_tool()]),
+        tools,
     };
 
     // Spawn async task to handle streaming

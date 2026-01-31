@@ -206,9 +206,6 @@ export function useChat(): UseChatReturn {
       }
 
       try {
-        // Add placeholder assistant message that will be updated with streaming content
-        setMessages((prev) => [...prev, { role: 'assistant', content: '' }]);
-
         // Load workspace context if working directory is provided
         let workspaceContext = '';
         if (workingDirectory) {
@@ -240,11 +237,19 @@ export function useChat(): UseChatReturn {
             // Update the last message (assistant's response) with accumulated content
             setMessages((prev) => {
               const updated = [...prev];
+              // Check if we already have an assistant message at the end
               if (updated.length > 0 && updated[updated.length - 1].role === 'assistant') {
+                // Update existing assistant message
                 updated[updated.length - 1] = {
                   role: 'assistant',
                   content: currentResponseRef.current,
                 };
+              } else {
+                // Add new assistant message with first chunk of data
+                updated.push({
+                  role: 'assistant',
+                  content: currentResponseRef.current,
+                });
               }
               return updated;
             });
@@ -266,6 +271,11 @@ export function useChat(): UseChatReturn {
                   role: 'assistant',
                   content: currentResponseRef.current,
                 };
+              } else {
+                updated.push({
+                  role: 'assistant',
+                  content: currentResponseRef.current,
+                });
               }
               return updated;
             });
@@ -324,6 +334,11 @@ export function useChat(): UseChatReturn {
                         role: 'assistant',
                         content: currentResponseRef.current,
                       };
+                    } else {
+                      updated.push({
+                        role: 'assistant',
+                        content: currentResponseRef.current,
+                      });
                     }
                     return updated;
                   });

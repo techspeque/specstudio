@@ -94,12 +94,30 @@ export function useWorkspace(targetWorkspace: string | null): UseWorkspaceReturn
    * Select a spec and load its content (and companion plan if exists)
    */
   const selectSpec = useCallback(async (spec: Spec | null) => {
-    // Clear any pending auto-save
+    // Clear any pending auto-save timers
     if (saveTimeoutRef.current) {
       clearTimeout(saveTimeoutRef.current);
+      saveTimeoutRef.current = null;
     }
     if (planAutoSaveTimeoutRef.current) {
       clearTimeout(planAutoSaveTimeoutRef.current);
+      planAutoSaveTimeoutRef.current = null;
+    }
+
+    // CRITICAL: Flush pending changes before switching specs to prevent data loss
+    if (specModifiedRef.current && currentFilenameRef.current && targetWorkspace) {
+      try {
+        console.log(`[selectSpec] Flushing unsaved changes for ${currentFilenameRef.current}`);
+        await invoke<SaveResult>('save_spec', {
+          filename: currentFilenameRef.current,
+          content: specContent,
+          workingDirectory: targetWorkspace,
+        });
+        specModifiedRef.current = false;
+      } catch (err) {
+        console.error('[selectSpec] Failed to flush pending changes:', err);
+        // Continue with spec switch even if save fails
+      }
     }
 
     setSelectedSpec(spec);
@@ -114,6 +132,7 @@ export function useWorkspace(targetWorkspace: string | null): UseWorkspaceReturn
 
     try {
       setIsLoading(true);
+      setDevelopmentPlanState(null); // Clear stale plan state to prevent "ghost plans"
 
       // Load spec content
       const result = await invoke<SpecContent>('read_spec', {
@@ -132,18 +151,19 @@ export function useWorkspace(targetWorkspace: string | null): UseWorkspaceReturn
         });
         const plan = JSON.parse(planResult.content) as DevelopmentPlan;
         setDevelopmentPlanState(plan);
-      } catch {
-        // No plan file exists or parse error - that's ok
-        setDevelopmentPlanState(null);
+      } catch (planErr) {
+        // No plan file exists or parse error - log warning but don't crash
+        console.warn(`Could not load plan for ${spec.filename}:`, planErr);
+        // Plan state was already cleared at the start - no action needed
       }
     } catch (err) {
       setError(err as string);
       setSpecContentState('');
-      setDevelopmentPlanState(null);
+      // Don't clear plan state here - let UI retain state if spec load fails
     } finally {
       setIsLoading(false);
     }
-  }, [targetWorkspace]);
+  }, [targetWorkspace, specContent]);
 
   /**
    * Save a spec file to .specstudio/specs/
