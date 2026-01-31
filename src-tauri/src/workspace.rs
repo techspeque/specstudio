@@ -11,10 +11,11 @@ use std::path::{Path, PathBuf};
 // Constants
 // ============================================================================
 
-const SPECS_DIR: &str = "docs/specs";
+const SPECS_DIR: &str = ".specstudio/specs";
 
 // Directories/files to exclude when reading workspace for AI context
 const EXCLUDED_DIRS: &[&str] = &[
+    ".specstudio", // CRITICAL: Prevents AI from reading its own plan JSONs
     "node_modules",
     ".git",
     ".next",
@@ -241,7 +242,7 @@ pub fn read_workspace(working_directory: Option<String>) -> Result<WorkspaceData
     })
 }
 
-/// List all specs in docs/specs/
+/// List all specs in .specstudio/specs/
 #[tauri::command]
 pub fn list_specs(working_directory: Option<String>) -> Result<Vec<Spec>, String> {
     let cwd = working_directory
@@ -271,7 +272,7 @@ pub fn read_spec(filename: String, working_directory: Option<String>) -> Result<
     Ok(SpecContent { filename, content })
 }
 
-/// Save a spec file to docs/specs/
+/// Save a spec file to .specstudio/specs/
 #[tauri::command]
 pub fn save_spec(filename: String, content: String, working_directory: Option<String>) -> Result<SaveResult, String> {
     let cwd = working_directory
@@ -280,7 +281,7 @@ pub fn save_spec(filename: String, content: String, working_directory: Option<St
 
     let specs_dir = cwd.join(SPECS_DIR);
 
-    // Ensure the docs/specs directory exists
+    // Ensure the .specstudio/specs directory exists
     if !specs_dir.exists() {
         fs::create_dir_all(&specs_dir)
             .map_err(|e| format!("Failed to create specs directory: {}", e))?;

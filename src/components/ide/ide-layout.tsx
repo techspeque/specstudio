@@ -305,7 +305,7 @@ Analyze the conversation and generate a complete specification now.`
 							await saveSpec(filename, genSpecContentRef.current)
 							appendConsoleOutput({
 								type: 'complete',
-								data: `✅ Spec saved to docs/specs/${filename}`,
+								data: `✅ Spec saved to .specstudio/specs/${filename}`,
 								timestamp: Date.now(),
 							})
 							// The saveSpec function already refreshes the workspace

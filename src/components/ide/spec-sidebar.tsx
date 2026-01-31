@@ -2,7 +2,7 @@
 
 // ============================================================================
 // Spec Sidebar
-// Displays list of specifications from docs/specs/
+// Displays list of specifications from .specstudio/specs/
 // ============================================================================
 
 import { Spec } from '@/types';
@@ -35,7 +35,7 @@ export function SpecSidebar({
               Specifications
             </h2>
             <p className="text-xs text-zinc-500 mt-1">
-              {specs.length} spec{specs.length !== 1 ? 's' : ''} in docs/specs/
+              {specs.length} spec{specs.length !== 1 ? 's' : ''} in .specstudio/specs/
             </p>
           </div>
           <Button

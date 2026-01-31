@@ -146,7 +146,7 @@ export function useWorkspace(targetWorkspace: string | null): UseWorkspaceReturn
   }, [targetWorkspace]);
 
   /**
-   * Save a spec file to docs/specs/
+   * Save a spec file to .specstudio/specs/
    */
   const saveSpec = useCallback(async (filename: string, content: string) => {
     if (!targetWorkspace) {
@@ -317,7 +317,7 @@ Add implementation details, constraints, or architectural decisions.
   }, []);
 
   /**
-   * Save a plan file to docs/specs/{filename}.plan.json
+   * Save a plan file to .specstudio/specs/{filename}.plan.json
    */
   const savePlan = useCallback(async (filename: string, planData: DevelopmentPlan) => {
     if (!targetWorkspace) {
