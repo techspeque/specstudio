@@ -219,7 +219,7 @@ export function ChatPanel({
                   </Button>
                 </TooltipTrigger>
                 <TooltipContent side="left">
-                  <p>Generate Spec from chat</p>
+                  <p>Generate markdown spec from chat</p>
                 </TooltipContent>
               </Tooltip>
             </TooltipProvider>

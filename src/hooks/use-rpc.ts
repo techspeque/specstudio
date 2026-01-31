@@ -173,6 +173,11 @@ export function useChat(): UseChatReturn {
   const unlistenRef = useRef<UnlistenFn | null>(null);
   const currentResponseRef = useRef<string>('');
 
+  // Store context for tool calls
+  const workingDirectoryRef = useRef<string | undefined>(undefined);
+  const specContentRef = useRef<string | undefined>(undefined);
+  const pendingToolCallRef = useRef<{name: string, args: any} | null>(null);
+
   // Clean up on unmount
   useEffect(() => {
     return () => {
@@ -188,6 +193,11 @@ export function useChat(): UseChatReturn {
       setMessages((prev) => [...prev, userMessage]);
       setIsLoading(true);
       currentResponseRef.current = '';
+
+      // Store context for tool calls
+      workingDirectoryRef.current = workingDirectory;
+      specContentRef.current = specContent;
+      pendingToolCallRef.current = null;
 
       // Clean up previous listener
       if (unlistenRef.current) {
@@ -222,7 +232,7 @@ export function useChat(): UseChatReturn {
         }
 
         // Set up event listener for streaming data
-        unlistenRef.current = await listen<StreamEvent>('rpc:stream:data', (event) => {
+        unlistenRef.current = await listen<StreamEvent>('rpc:stream:data', async (event) => {
           const streamEvent = event.payload;
 
           if (streamEvent.type === 'output') {
@@ -238,6 +248,14 @@ export function useChat(): UseChatReturn {
               }
               return updated;
             });
+          } else if (streamEvent.type === 'tool_call') {
+            // Handle tool calls from Gemini
+            try {
+              const toolCall = JSON.parse(streamEvent.data);
+              pendingToolCallRef.current = toolCall;
+            } catch (err) {
+              console.error('Failed to parse tool call:', err);
+            }
           } else if (streamEvent.type === 'error') {
             // Append error to current response
             currentResponseRef.current += `\n\nError: ${streamEvent.data}`;
@@ -252,6 +270,68 @@ export function useChat(): UseChatReturn {
               return updated;
             });
           } else if (streamEvent.type === 'complete') {
+            // Check if there was a tool call that needs handling
+            if (pendingToolCallRef.current) {
+              const { name, args } = pendingToolCallRef.current;
+              pendingToolCallRef.current = null;
+
+              if (name === 'search_files') {
+                try {
+                  // Execute the search_files tool
+                  const result = await invoke('search_files', {
+                    query: args.query,
+                    path: workingDirectoryRef.current || '.',
+                    max_results: args.max_results || 50,
+                  });
+
+                  // Format tool output as specified
+                  const toolOutput = `Tool Output [search_files]: ${JSON.stringify(result)}`;
+
+                  // Build updated history with tool result (hidden from user)
+                  // Get current messages excluding the empty placeholder assistant message
+                  const currentMessages = messages.filter(
+                    (m) => !(m.role === 'assistant' && m.content === '')
+                  );
+
+                  // Add user message and the accumulated response as assistant message
+                  const historyWithResponse = [
+                    ...currentMessages,
+                    { role: 'user', content },
+                  ];
+                  if (currentResponseRef.current) {
+                    historyWithResponse.push({
+                      role: 'assistant',
+                      content: currentResponseRef.current,
+                    });
+                  }
+
+                  // Continue the chat with tool results
+                  await invoke('chat_with_gemini', {
+                    prompt: toolOutput,
+                    history: historyWithResponse,
+                    specContent: specContentRef.current,
+                  });
+
+                  // Don't set isLoading to false - still waiting for continued response
+                  return; // Don't cleanup listener, let it continue
+                } catch (err) {
+                  console.error('Tool execution failed:', err);
+                  currentResponseRef.current += `\n\n[Tool execution failed: ${err}]`;
+                  setMessages((prev) => {
+                    const updated = [...prev];
+                    if (updated.length > 0 && updated[updated.length - 1].role === 'assistant') {
+                      updated[updated.length - 1] = {
+                        role: 'assistant',
+                        content: currentResponseRef.current,
+                      };
+                    }
+                    return updated;
+                  });
+                }
+              }
+            }
+
+            // Normal completion - no tool call or tool call handled
             setIsLoading(false);
             if (unlistenRef.current) {
               unlistenRef.current();

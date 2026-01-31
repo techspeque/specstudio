@@ -57,7 +57,30 @@ export interface Spec {
 
 // Stream Event Types
 export interface StreamEvent {
-  type: 'output' | 'error' | 'complete' | 'input';
+  type: 'output' | 'error' | 'complete' | 'input' | 'tool_call';
   data: string;
   timestamp: number;
+}
+
+// Development Plan Types
+export type TicketStatus = 'todo' | 'running' | 'done';
+
+export interface Ticket {
+  id: string;
+  title: string;
+  requirements: string[];
+  acceptance_criteria: string[];
+  status?: TicketStatus;
+}
+
+export interface Phase {
+  title: string;
+  description: string;
+  tickets: Ticket[];
+}
+
+export interface DevelopmentPlan {
+  title: string;
+  overview: string;
+  phases: Phase[];
 }

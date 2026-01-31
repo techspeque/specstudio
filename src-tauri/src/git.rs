@@ -28,6 +28,13 @@ pub struct GitRevertResult {
     pub reverted_files: usize,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitDiffResult {
+    pub diff: String,
+    pub files_changed: usize,
+}
+
 // ============================================================================
 // Tauri Commands
 // ============================================================================
@@ -194,4 +201,86 @@ pub fn read_file(working_directory: String, file_path: String) -> Result<String,
 
     std::fs::read_to_string(&full_path)
         .map_err(|e| format!("Failed to read file: {}", e))
+}
+
+/// Get git diff for staged changes (or specific files if provided)
+/// If files is None, returns diff for all staged changes
+/// If files is Some, returns diff for those specific files (staged + unstaged)
+#[tauri::command]
+pub fn get_staged_diff(
+    working_directory: String,
+    files: Option<Vec<String>>,
+) -> Result<GitDiffResult, String> {
+    let cwd = Path::new(&working_directory);
+
+    if !cwd.exists() || !cwd.is_dir() {
+        return Err("Working directory does not exist".to_string());
+    }
+
+    // Check if it's a git repo
+    let git_dir = cwd.join(".git");
+    if !git_dir.exists() {
+        return Err("Not a git repository".to_string());
+    }
+
+    let output = if let Some(file_list) = files {
+        if file_list.is_empty() {
+            // If empty list provided, return all changes (staged + unstaged)
+            Command::new("git")
+                .args(["diff", "HEAD"])
+                .current_dir(cwd)
+                .output()
+                .map_err(|e| format!("Failed to run git diff: {}", e))?
+        } else {
+            // Get diff for specific files (includes both staged and unstaged)
+            let mut args = vec!["diff", "HEAD", "--"];
+            args.extend(file_list.iter().map(|s| s.as_str()));
+            Command::new("git")
+                .args(&args)
+                .current_dir(cwd)
+                .output()
+                .map_err(|e| format!("Failed to run git diff: {}", e))?
+        }
+    } else {
+        // No files specified - get all staged changes
+        // First check if there are any commits in the repo
+        let rev_parse = Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(cwd)
+            .output()
+            .map_err(|e| format!("Failed to check git history: {}", e))?;
+
+        if rev_parse.status.success() {
+            // Repo has commits - use diff HEAD
+            Command::new("git")
+                .args(["diff", "HEAD"])
+                .current_dir(cwd)
+                .output()
+                .map_err(|e| format!("Failed to run git diff: {}", e))?
+        } else {
+            // Initial commit - show all files
+            Command::new("git")
+                .args(["diff", "--cached"])
+                .current_dir(cwd)
+                .output()
+                .map_err(|e| format!("Failed to run git diff: {}", e))?
+        }
+    };
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("git diff failed: {}", stderr));
+    }
+
+    let diff = String::from_utf8_lossy(&output.stdout).to_string();
+
+    // Count files changed by looking at diff headers
+    let files_changed = diff.lines()
+        .filter(|line| line.starts_with("diff --git"))
+        .count();
+
+    Ok(GitDiffResult {
+        diff,
+        files_changed,
+    })
 }

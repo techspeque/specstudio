@@ -8,6 +8,7 @@ mod deps;
 mod filetree;
 mod gemini;
 mod git;
+mod search;
 mod shell;
 mod workspace;
 
@@ -52,8 +53,12 @@ pub fn run() {
             git::git_revert_all,
             git::git_show_file,
             git::read_file,
+            git::get_staged_diff,
             // File tree commands
             filetree::get_file_tree,
+            // Search commands
+            search::search_files,
+            search::search_file_names,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

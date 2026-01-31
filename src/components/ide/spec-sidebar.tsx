@@ -7,13 +7,14 @@
 
 import { Spec } from '@/types';
 import { Button } from '@/components/ui/button';
-import { FileText, Trash2, Calendar } from 'lucide-react';
+import { FileText, Trash2, Calendar, Plus } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 interface SpecSidebarProps {
   specs: Spec[];
   selectedSpec: Spec | null;
   onSelectSpec: (spec: Spec | null) => void;
+  onCreateSpec: () => void;
   onDeleteSpec: (filename: string) => void;
 }
 
@@ -21,18 +22,32 @@ export function SpecSidebar({
   specs,
   selectedSpec,
   onSelectSpec,
+  onCreateSpec,
   onDeleteSpec,
 }: SpecSidebarProps) {
   return (
     <div className="h-full w-full flex flex-col bg-zinc-900 border-r border-zinc-800 overflow-hidden">
       <div className="p-4 border-b border-zinc-800">
-        <h2 className="text-sm font-semibold text-zinc-300 flex items-center gap-2">
-          <FileText className="h-4 w-4" />
-          Specifications
-        </h2>
-        <p className="text-xs text-zinc-500 mt-1">
-          {specs.length} spec{specs.length !== 1 ? 's' : ''} in docs/specs/
-        </p>
+        <div className="flex items-center justify-between">
+          <div className="flex-1">
+            <h2 className="text-sm font-semibold text-zinc-300 flex items-center gap-2">
+              <FileText className="h-4 w-4" />
+              Specifications
+            </h2>
+            <p className="text-xs text-zinc-500 mt-1">
+              {specs.length} spec{specs.length !== 1 ? 's' : ''} in docs/specs/
+            </p>
+          </div>
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={onCreateSpec}
+            className="h-7 w-7 text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800"
+            title="Create new spec"
+          >
+            <Plus className="h-4 w-4" />
+          </Button>
+        </div>
       </div>
 
       <div className="flex-1 min-h-0 overflow-y-auto">

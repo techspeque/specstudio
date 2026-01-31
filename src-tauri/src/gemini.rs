@@ -53,6 +53,21 @@ struct GeminiRequest {
     contents: Vec<GeminiContent>,
     #[serde(rename = "generationConfig", skip_serializing_if = "Option::is_none")]
     generation_config: Option<GenerationConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tools: Option<Vec<Tool>>,
+}
+
+#[derive(Debug, Serialize)]
+struct Tool {
+    #[serde(rename = "functionDeclarations")]
+    function_declarations: Vec<FunctionDeclaration>,
+}
+
+#[derive(Debug, Serialize)]
+struct FunctionDeclaration {
+    name: String,
+    description: String,
+    parameters: serde_json::Value,
 }
 
 #[derive(Debug, Serialize)]
@@ -71,6 +86,10 @@ struct GenerationConfig {
     temperature: f32,
     #[serde(rename = "maxOutputTokens")]
     max_output_tokens: u32,
+    #[serde(rename = "responseMimeType", skip_serializing_if = "Option::is_none")]
+    response_mime_type: Option<String>,
+    #[serde(rename = "responseSchema", skip_serializing_if = "Option::is_none")]
+    response_schema: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -92,6 +111,14 @@ struct GeminiContentResponse {
 #[derive(Debug, Deserialize)]
 struct GeminiPartResponse {
     text: Option<String>,
+    #[serde(rename = "functionCall")]
+    function_call: Option<FunctionCall>,
+}
+
+#[derive(Debug, Deserialize)]
+struct FunctionCall {
+    name: String,
+    args: serde_json::Value,
 }
 
 #[derive(Debug, Deserialize)]
@@ -103,6 +130,99 @@ struct GeminiError {
 // ============================================================================
 // Helper Functions
 // ============================================================================
+
+/// Get the JSON schema for Development Plan output
+fn get_development_plan_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "properties": {
+            "title": {
+                "type": "string",
+                "description": "Overall title of the development plan"
+            },
+            "overview": {
+                "type": "string",
+                "description": "High-level overview of what will be built"
+            },
+            "phases": {
+                "type": "array",
+                "description": "Development phases in chronological order",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "title": {
+                            "type": "string",
+                            "description": "Phase title"
+                        },
+                        "description": {
+                            "type": "string",
+                            "description": "What this phase accomplishes"
+                        },
+                        "tickets": {
+                            "type": "array",
+                            "description": "Implementation tickets for this phase",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "id": {
+                                        "type": "string",
+                                        "description": "Unique ticket identifier (e.g., SPEC-001)"
+                                    },
+                                    "title": {
+                                        "type": "string",
+                                        "description": "Ticket title"
+                                    },
+                                    "requirements": {
+                                        "type": "array",
+                                        "description": "Technical requirements",
+                                        "items": {
+                                            "type": "string"
+                                        }
+                                    },
+                                    "acceptance_criteria": {
+                                        "type": "array",
+                                        "description": "Acceptance criteria for completion",
+                                        "items": {
+                                            "type": "string"
+                                        }
+                                    }
+                                },
+                                "required": ["id", "title", "requirements", "acceptance_criteria"]
+                            }
+                        }
+                    },
+                    "required": ["title", "description", "tickets"]
+                }
+            }
+        },
+        "required": ["title", "overview", "phases"]
+    })
+}
+
+/// Get the search_files tool definition
+fn get_search_files_tool() -> Tool {
+    Tool {
+        function_declarations: vec![FunctionDeclaration {
+            name: "search_files".to_string(),
+            description: "Search for files in the workspace by content. Use this to understand the existing codebase structure, find similar implementations, or locate relevant files before creating a development plan.".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "The search query string to find in file contents"
+                    },
+                    "max_results": {
+                        "type": "integer",
+                        "description": "Maximum number of results to return (default: 50)",
+                        "default": 50
+                    }
+                },
+                "required": ["query"]
+            }),
+        }],
+    }
+}
 
 fn get_timestamp() -> u64 {
     SystemTime::now()
@@ -162,11 +282,39 @@ pub async fn chat_with_gemini(
     // Get settings
     let settings = get_settings(&app).await?;
 
-    // Build the system context
+    // Build the system context with Architect persona
     let mut system_context = String::new();
 
+    system_context.push_str(r#"# Role: Software Architect
+
+You are an expert Software Architect specializing in creating comprehensive development plans.
+
+## Your Mission
+1. Understand the user's intent and requirements through conversation
+2. Use the search_files tool to explore the existing codebase when needed
+3. Create a structured Development Plan that breaks down the work into phases and actionable tickets
+
+## Output Format
+When the user asks you to create a plan, formulate it, or "make it so", you MUST output a strict JSON Development Plan with this structure:
+- title: Overall plan title
+- overview: High-level description
+- phases: Array of development phases
+  - Each phase has: title, description, tickets
+  - Each ticket has: id, title, requirements[], acceptance_criteria[]
+
+## Guidelines
+- Break complex features into logical phases
+- Each ticket should be independently implementable
+- Use clear, actionable language in requirements
+- Define measurable acceptance criteria
+- Consider dependencies between tickets
+
+## Tools Available
+- search_files: Search the codebase to understand existing patterns and structure
+"#);
+
     if let Some(spec) = &spec_content {
-        system_context.push_str("## Current Specification\n");
+        system_context.push_str("\n## Current Specification\n");
         system_context.push_str(spec);
         system_context.push_str("\n\n");
     }
@@ -174,24 +322,19 @@ pub async fn chat_with_gemini(
     // Build Gemini contents from history
     let mut contents: Vec<GeminiContent> = Vec::new();
 
-    // Add system context as first user message if present
-    if !system_context.is_empty() {
-        contents.push(GeminiContent {
-            role: "user".to_string(),
-            parts: vec![GeminiPart {
-                text: format!(
-                    "You are a helpful AI assistant for software development. Here is the context for our conversation:\n\n{}",
-                    system_context
-                ),
-            }],
-        });
-        contents.push(GeminiContent {
-            role: "model".to_string(),
-            parts: vec![GeminiPart {
-                text: "I understand. I'll help you with your software development tasks based on the provided specification and architecture context. What would you like to work on?".to_string(),
-            }],
-        });
-    }
+    // Add system context as first user message
+    contents.push(GeminiContent {
+        role: "user".to_string(),
+        parts: vec![GeminiPart {
+            text: system_context,
+        }],
+    });
+    contents.push(GeminiContent {
+        role: "model".to_string(),
+        parts: vec![GeminiPart {
+            text: "I understand. I'm ready to help you architect your solution. I can explore your codebase using search_files and create structured development plans when you're ready. What would you like to discuss?".to_string(),
+        }],
+    });
 
     // Add conversation history
     if let Some(hist) = history {
@@ -213,15 +356,36 @@ pub async fn chat_with_gemini(
     // Add current prompt
     contents.push(GeminiContent {
         role: "user".to_string(),
-        parts: vec![GeminiPart { text: prompt }],
+        parts: vec![GeminiPart { text: prompt.clone() }],
     });
+
+    // Detect if user is requesting a plan (enable strict JSON output)
+    let requesting_plan = prompt.to_lowercase().contains("plan")
+        || prompt.to_lowercase().contains("formulate")
+        || prompt.to_lowercase().contains("make it so")
+        || prompt.to_lowercase().contains("create the spec");
+
+    // Configure generation with optional strict JSON schema
+    let generation_config = if requesting_plan {
+        GenerationConfig {
+            temperature: 0.7,
+            max_output_tokens: 8192,
+            response_mime_type: Some("application/json".to_string()),
+            response_schema: Some(get_development_plan_schema()),
+        }
+    } else {
+        GenerationConfig {
+            temperature: 0.7,
+            max_output_tokens: 8192,
+            response_mime_type: None,
+            response_schema: None,
+        }
+    };
 
     let request = GeminiRequest {
         contents,
-        generation_config: Some(GenerationConfig {
-            temperature: 0.7,
-            max_output_tokens: 8192,
-        }),
+        generation_config: Some(generation_config),
+        tools: Some(vec![get_search_files_tool()]),
     };
 
     // Spawn async task to handle streaming
@@ -324,11 +488,26 @@ async fn stream_gemini_response(
                                 if let Some(content) = candidate.content {
                                     if let Some(parts) = content.parts {
                                         for part in parts {
+                                            // Handle text output
                                             if let Some(text) = part.text {
                                                 if !text.is_empty() {
                                                     received_any_content = true;
                                                     emit_stream_event(app, "output", &text);
                                                 }
+                                            }
+
+                                            // Handle tool calls
+                                            if let Some(function_call) = part.function_call {
+                                                received_any_content = true;
+                                                let tool_call_json = serde_json::json!({
+                                                    "name": function_call.name,
+                                                    "args": function_call.args
+                                                });
+                                                emit_stream_event(
+                                                    app,
+                                                    "tool_call",
+                                                    &serde_json::to_string(&tool_call_json).unwrap_or_default()
+                                                );
                                             }
                                         }
                                     }
