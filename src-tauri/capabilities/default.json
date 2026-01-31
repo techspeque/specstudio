@@ -8,6 +8,7 @@
     "core:event:default",
     "shell:default",
     "dialog:default",
-    "store:default"
+    "store:default",
+    "process:default"
   ]
 }

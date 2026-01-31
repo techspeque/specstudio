@@ -23,9 +23,11 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { Settings, Loader2, CheckCircle, AlertCircle } from 'lucide-react';
+import { Separator } from '@/components/ui/separator';
+import { Settings, Loader2, CheckCircle, AlertCircle, AlertTriangle } from 'lucide-react';
 import { load } from '@tauri-apps/plugin-store';
 import { invoke } from '@tauri-apps/api/core';
+import { relaunch } from '@tauri-apps/plugin-process';
 
 const STORE_FILE = 'settings.json';
 
@@ -88,6 +90,7 @@ export function SettingsDialog({
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saveSuccess, setSaveSuccess] = useState(false);
+  const [isResetting, setIsResetting] = useState(false);
 
   // Load current settings when dialog opens
   useEffect(() => {
@@ -146,6 +149,58 @@ export function SettingsDialog({
       setIsSaving(false);
     }
   }, [geminiApiKey, geminiModel, onOpenChange, onSettingsSaved]);
+
+  const handleFactoryReset = useCallback(async () => {
+    const confirmed = window.confirm(
+      'Are you sure you want to reset the app?\n\n' +
+      'This will:\n' +
+      '• Clear all API keys and settings\n' +
+      '• Clear all workspace history\n' +
+      '• Reset the app to first-launch state\n\n' +
+      'This action cannot be undone.'
+    );
+
+    if (!confirmed) {
+      return;
+    }
+
+    setIsResetting(true);
+    setError(null);
+
+    try {
+      console.log('[factory_reset] Starting factory reset...');
+
+      // Clear backend stores (settings.json, auth.json)
+      console.log('[factory_reset] Calling backend factory_reset command...');
+      await invoke('factory_reset');
+      console.log('[factory_reset] Backend stores cleared successfully');
+
+      // Clear all localStorage keys
+      console.log('[factory_reset] Clearing localStorage...');
+      if (typeof window !== 'undefined') {
+        const keysToRemove: string[] = [];
+        for (let i = 0; i < localStorage.length; i++) {
+          const key = localStorage.key(i);
+          if (key?.startsWith('specstudio_')) {
+            keysToRemove.push(key);
+          }
+        }
+        console.log(`[factory_reset] Found ${keysToRemove.length} localStorage keys to remove:`, keysToRemove);
+        keysToRemove.forEach(key => localStorage.removeItem(key));
+        console.log('[factory_reset] localStorage cleared successfully');
+      }
+
+      // Relaunch the app
+      console.log('[factory_reset] Relaunching app...');
+      await relaunch();
+    } catch (err) {
+      const errorMessage = (err as Error).message || String(err) || 'Failed to reset app';
+      console.error('[factory_reset] ERROR:', err);
+      console.error('[factory_reset] Error message:', errorMessage);
+      setError(errorMessage);
+      setIsResetting(false);
+    }
+  }, []);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -258,6 +313,38 @@ export function SettingsDialog({
                   </>
                 ) : (
                   'Save Settings'
+                )}
+              </Button>
+            </div>
+
+            {/* Danger Zone */}
+            <Separator className="my-6 bg-zinc-800" />
+
+            <div className="space-y-3">
+              <div className="flex items-start gap-2">
+                <AlertTriangle className="h-5 w-5 text-red-400 mt-0.5 shrink-0" />
+                <div className="flex-1">
+                  <h3 className="text-sm font-semibold text-red-400">Danger Zone</h3>
+                  <p className="text-xs text-zinc-500 mt-1">
+                    Reset the application to its initial state. This will clear all API keys,
+                    workspace history, and settings. This action cannot be undone.
+                  </p>
+                </div>
+              </div>
+
+              <Button
+                variant="destructive"
+                onClick={handleFactoryReset}
+                disabled={isResetting}
+                className="w-full"
+              >
+                {isResetting ? (
+                  <>
+                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                    Resetting...
+                  </>
+                ) : (
+                  'Reset App'
                 )}
               </Button>
             </div>

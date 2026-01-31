@@ -6,6 +6,7 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
+use tauri::AppHandle;
 
 // ============================================================================
 // Constants
@@ -313,6 +314,56 @@ pub fn delete_spec(filename: String, working_directory: Option<String>) -> Resul
         .map_err(|e| format!("Failed to delete spec file: {}", e))?;
 
     Ok(SaveResult { success: true })
+}
+
+/// Factory reset - clear all stores and return success
+/// Frontend should clear localStorage and relaunch the app
+#[tauri::command]
+pub fn factory_reset(app: AppHandle) -> Result<(), String> {
+    use tauri_plugin_store::StoreExt;
+
+    println!("[factory_reset] Starting factory reset...");
+
+    // Clear settings.json store - ignore errors if store doesn't exist
+    println!("[factory_reset] Attempting to clear settings store...");
+    match app.store("settings.json") {
+        Ok(settings_store) => {
+            println!("[factory_reset] Settings store opened, clearing...");
+            settings_store.clear();
+            if let Err(e) = settings_store.save() {
+                eprintln!("[factory_reset] Warning: Failed to save settings store: {}", e);
+                // Continue anyway - we're resetting
+            } else {
+                println!("[factory_reset] Settings store cleared successfully");
+            }
+        }
+        Err(e) => {
+            eprintln!("[factory_reset] Note: Could not open settings store (may not exist): {}", e);
+            // Continue - store might not exist yet
+        }
+    }
+
+    // Clear auth.json store - ignore errors if store doesn't exist
+    println!("[factory_reset] Attempting to clear auth store...");
+    match app.store("auth.json") {
+        Ok(auth_store) => {
+            println!("[factory_reset] Auth store opened, clearing...");
+            auth_store.clear();
+            if let Err(e) = auth_store.save() {
+                eprintln!("[factory_reset] Warning: Failed to save auth store: {}", e);
+                // Continue anyway - we're resetting
+            } else {
+                println!("[factory_reset] Auth store cleared successfully");
+            }
+        }
+        Err(e) => {
+            eprintln!("[factory_reset] Note: Could not open auth store (may not exist): {}", e);
+            // Continue - store might not exist yet
+        }
+    }
+
+    println!("[factory_reset] Factory reset completed");
+    Ok(())
 }
 
 /// Read workspace files for AI context (with exclusions)

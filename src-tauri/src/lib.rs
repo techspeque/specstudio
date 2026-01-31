@@ -19,6 +19,7 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_store::Builder::default().build())
+        .plugin(tauri_plugin_process::init())
         .manage(shell::ProcessRegistry::new())
         .invoke_handler(tauri::generate_handler![
             // Dependency check commands
@@ -59,6 +60,8 @@ pub fn run() {
             // Search commands
             search::search_files,
             search::search_file_names,
+            // Factory reset command
+            workspace::factory_reset,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
