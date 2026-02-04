@@ -5,6 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::process::Command;
+use crate::shell::{get_robust_path_env, resolve_binary_path};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -25,7 +26,14 @@ pub struct DependencyCheckResult {
 
 /// Check if a command exists and get its version
 fn check_command(cmd: &str, version_args: &[&str]) -> (bool, Option<String>) {
-    match Command::new(cmd).args(version_args).output() {
+    // Resolve absolute path to binary (critical for macOS .app bundles)
+    let cmd_path = resolve_binary_path(cmd);
+    let robust_path = get_robust_path_env();
+
+    match Command::new(&cmd_path)
+        .args(version_args)
+        .env("PATH", robust_path)
+        .output() {
         Ok(output) if output.status.success() => {
             let version_output = String::from_utf8_lossy(&output.stdout);
             // Extract first line as version info

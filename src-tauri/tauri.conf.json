@@ -2,7 +2,7 @@
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "SpecStudio",
   "version": "0.1.0",
-  "identifier": "com.specstudio.app",
+  "identifier": "com.specstudio.ide",
   "build": {
     "frontendDist": "../out",
     "devUrl": "http://localhost:3000",

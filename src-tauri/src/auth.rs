@@ -10,6 +10,7 @@ use tauri::{AppHandle, Emitter};
 use tauri_plugin_store::StoreExt;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
+use crate::shell::{get_robust_path_env, resolve_binary_path};
 
 const OAUTH_CALLBACK_PORT: u16 = 23847;
 
@@ -119,8 +120,13 @@ pub async fn logout_google(app: AppHandle) -> Result<(), String> {
 pub async fn check_anthropic_auth() -> Result<bool, String> {
     use std::process::Command;
 
-    let output = Command::new("claude")
+    // Resolve absolute path to claude binary (critical for macOS .app bundles)
+    let claude_path = resolve_binary_path("claude");
+    let robust_path = get_robust_path_env();
+
+    let output = Command::new(&claude_path)
         .args(["auth", "status"])
+        .env("PATH", robust_path)
         .output()
         .map_err(|e| format!("Failed to run claude auth status: {}", e))?;
 
@@ -154,9 +160,14 @@ pub async fn start_anthropic_oauth(app: AppHandle) -> Result<AuthResult, String>
         },
     );
 
+    // Resolve absolute path to claude binary (critical for macOS .app bundles)
+    let claude_path = resolve_binary_path("claude");
+    let robust_path = get_robust_path_env();
+
     // Run claude auth login - this will open browser and wait for completion
-    let output = Command::new("claude")
+    let output = Command::new(&claude_path)
         .args(["auth", "login"])
+        .env("PATH", robust_path)
         .output()
         .map_err(|e| format!("Failed to run claude auth login: {}", e))?;
 
@@ -201,8 +212,13 @@ pub async fn start_anthropic_oauth(app: AppHandle) -> Result<AuthResult, String>
 pub async fn logout_anthropic(app: AppHandle) -> Result<(), String> {
     use std::process::Command;
 
-    let output = Command::new("claude")
+    // Resolve absolute path to claude binary (critical for macOS .app bundles)
+    let claude_path = resolve_binary_path("claude");
+    let robust_path = get_robust_path_env();
+
+    let output = Command::new(&claude_path)
         .args(["auth", "logout"])
+        .env("PATH", robust_path)
         .output()
         .map_err(|e| format!("Failed to run claude auth logout: {}", e))?;
 

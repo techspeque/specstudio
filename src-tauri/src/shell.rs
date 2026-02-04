@@ -1,9 +1,10 @@
 // ============================================================================
-// Shell Commands
-// Handles process spawning and streaming output via Tauri Events
-// Supports interactive input for CLI tools like Claude Code
+// Shell Commands (Updated)
+// - Added ~/.local/bin to search paths
+// - Added deep logging for process spawning debug
 // ============================================================================
 
+use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
@@ -50,12 +51,16 @@ pub struct InputResult {
 
 // ============================================================================
 // Process Registry
-// Tracks active streaming processes for cancellation and input
 // ============================================================================
 
+enum ProcessWriter {
+    Pty(Arc<Mutex<Option<Box<dyn Write + Send>>>>),
+    Stdin(Arc<Mutex<Option<ChildStdin>>>),
+}
+
 struct ProcessHandle {
-    child: Arc<Mutex<Option<Child>>>,
-    stdin: Arc<Mutex<Option<ChildStdin>>>,
+    writer: ProcessWriter,
+    child_pid: Option<u32>,
 }
 
 pub struct ProcessRegistry {
@@ -69,23 +74,45 @@ impl ProcessRegistry {
         }
     }
 
-    pub fn register(&self, id: String, mut child: Child) -> (Arc<Mutex<Option<Child>>>, Arc<Mutex<Option<ChildStdin>>>) {
+    pub fn register_pty(&self, id: String, pty_writer: Box<dyn Write + Send>, child_pid: Option<u32>) {
+        let writer_handle = Arc::new(Mutex::new(Some(pty_writer)));
+        self.processes.lock().unwrap().insert(id, ProcessHandle {
+            writer: ProcessWriter::Pty(writer_handle),
+            child_pid,
+        });
+    }
+
+    pub fn register(&self, id: String, mut child: Child) -> Arc<Mutex<Option<ChildStdin>>> {
         let stdin = child.stdin.take();
-        let child_handle = Arc::new(Mutex::new(Some(child)));
+        let child_pid = child.id();
         let stdin_handle = Arc::new(Mutex::new(stdin));
 
         self.processes.lock().unwrap().insert(id, ProcessHandle {
-            child: child_handle.clone(),
-            stdin: stdin_handle.clone(),
+            writer: ProcessWriter::Stdin(stdin_handle.clone()),
+            child_pid: Some(child_pid),
         });
 
-        (child_handle, stdin_handle)
+        // Child is moved here and needs to be kept alive elsewhere
+        // Return stdin handle for the spawn_npm_command to manage
+        stdin_handle
     }
 
     pub fn get_stdin(&self, id: &str) -> Option<Arc<Mutex<Option<ChildStdin>>>> {
         self.processes.lock().unwrap()
             .get(id)
-            .map(|h| h.stdin.clone())
+            .and_then(|h| match &h.writer {
+                ProcessWriter::Stdin(s) => Some(s.clone()),
+                ProcessWriter::Pty(_) => None,
+            })
+    }
+
+    pub fn get_pty_writer(&self, id: &str) -> Option<Arc<Mutex<Option<Box<dyn Write + Send>>>>> {
+        self.processes.lock().unwrap()
+            .get(id)
+            .and_then(|h| match &h.writer {
+                ProcessWriter::Pty(w) => Some(w.clone()),
+                ProcessWriter::Stdin(_) => None,
+            })
     }
 
     pub fn remove(&self, id: &str) {
@@ -96,10 +123,20 @@ impl ProcessRegistry {
         let mut killed = 0;
         let mut registry = self.processes.lock().unwrap();
         for (_, handle) in registry.drain() {
-            if let Ok(mut guard) = handle.child.lock() {
-                if let Some(ref mut child) = *guard {
-                    let _ = child.kill();
+            if let Some(pid) = handle.child_pid {
+                #[cfg(unix)]
+                {
+                    use std::process::Command;
+                    // Kill the process group to ensure all child processes are terminated
+                    let _ = Command::new("kill")
+                        .arg("-9")
+                        .arg(format!("{}", pid))
+                        .spawn();
                     killed += 1;
+                }
+                #[cfg(not(unix))]
+                {
+                    log::warn!("Process termination not implemented for this platform");
                 }
             }
         }
@@ -124,6 +161,67 @@ impl Default for ProcessRegistry {
 // Helper Functions
 // ============================================================================
 
+/// Robustly find a binary in common macOS/Linux locations
+pub fn resolve_binary_path(binary_name: &str) -> String {
+    let home = dirs::home_dir().unwrap_or_default();
+    
+    // Convert paths to Strings to avoid lifetime issues
+    let local_bin = home.join(".local/bin").to_string_lossy().to_string(); // Added for your setup
+    let bun_path = home.join(".bun/bin").to_string_lossy().to_string();
+    let npm_global_path = home.join(".npm-global/bin").to_string_lossy().to_string();
+    let cargo_path = home.join(".cargo/bin").to_string_lossy().to_string();
+
+    let search_paths = [
+        local_bin.as_str(), // Check user local bin first
+        "/opt/homebrew/bin",
+        "/usr/local/bin",
+        "/usr/bin",
+        "/bin",
+        "/usr/sbin",
+        "/sbin",
+        bun_path.as_str(),
+        npm_global_path.as_str(),
+        cargo_path.as_str(),
+    ];
+
+    log::info!("Searching for binary '{}' in standard paths...", binary_name);
+
+    for path in search_paths {
+        if path.is_empty() { continue; }
+        let bin_path = std::path::Path::new(path).join(binary_name);
+        if bin_path.exists() {
+            log::info!("Found binary at: {}", bin_path.display());
+            return bin_path.to_string_lossy().to_string();
+        }
+    }
+
+    log::warn!("Binary '{}' not found in search paths, falling back to system lookup", binary_name);
+    binary_name.to_string()
+}
+
+/// Construct a PATH string that includes user tools
+pub fn get_robust_path_env() -> String {
+    let existing_path = std::env::var("PATH").unwrap_or_default();
+    let home = dirs::home_dir().unwrap_or_default();
+
+    let local_bin = home.join(".local/bin").to_string_lossy().to_string();
+    let bun_path = home.join(".bun/bin").to_string_lossy().to_string();
+    let npm_global_path = home.join(".npm-global/bin").to_string_lossy().to_string();
+    let cargo_path = home.join(".cargo/bin").to_string_lossy().to_string();
+
+    let extra_paths = vec![
+        local_bin.as_str(),
+        "/opt/homebrew/bin",
+        "/usr/local/bin",
+        bun_path.as_str(),
+        npm_global_path.as_str(),
+        cargo_path.as_str(),
+    ];
+    
+    let joined_extras = extra_paths.join(":");
+    format!("{}:{}", joined_extras, existing_path)
+}
+
 fn get_timestamp() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -137,41 +235,50 @@ fn emit_stream_event(app: &AppHandle, event_type: &str, data: &str) {
         data: data.to_string(),
         timestamp: get_timestamp(),
     };
+    // Log errors to backend log as well
+    if event_type == "error" {
+        log::error!("Stream Error: {}", data);
+    }
     let _ = app.emit("rpc:stream:data", event);
 }
 
-/// Stream stdout bytes to the frontend without waiting for newlines.
-/// Uses a small buffer and emits chunks as they arrive.
 fn stream_stdout(mut stdout: ChildStdout, app: AppHandle) {
-    let mut buffer = [0u8; 256];
+    let mut buffer = [0u8; 1024]; // Increased buffer size
     loop {
         match stdout.read(&mut buffer) {
-            Ok(0) => break, // EOF
+            Ok(0) => break, 
             Ok(n) => {
                 let text = String::from_utf8_lossy(&buffer[..n]);
+                // Log output trace for debugging (verbose)
+                log::trace!("STDOUT: {}", text);
                 emit_stream_event(&app, "output", &text);
             }
-            Err(_) => break,
+            Err(e) => {
+                log::error!("Error reading stdout: {}", e);
+                break;
+            }
         }
     }
 }
 
-/// Stream stderr bytes to the frontend without waiting for newlines.
 fn stream_stderr(mut stderr: ChildStderr, app: AppHandle) {
-    let mut buffer = [0u8; 256];
+    let mut buffer = [0u8; 1024];
     loop {
         match stderr.read(&mut buffer) {
-            Ok(0) => break, // EOF
+            Ok(0) => break,
             Ok(n) => {
                 let text = String::from_utf8_lossy(&buffer[..n]);
+                log::info!("STDERR: {}", text); // Log stderr as info to catch prompt questions
                 emit_stream_event(&app, "error", &text);
             }
-            Err(_) => break,
+            Err(e) => {
+                log::error!("Error reading stderr: {}", e);
+                break;
+            }
         }
     }
 }
 
-/// Build the prompt for Claude based on action type
 fn build_prompt(action: &str, spec_content: &str) -> String {
     if action == "create_code" {
         format!(
@@ -220,138 +327,163 @@ pub fn spawn_streaming_process(
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
 
     let process_id = format!("proc_{}", get_timestamp());
-
-    // Get the process registry
     let registry = app.state::<ProcessRegistry>();
 
-    emit_stream_event(&app, "output", &format!("Starting {}...\n", action));
+    log::info!("--- SPATTERING PROCESS START ---");
+    log::info!("Action: {}", action);
+    log::info!("CWD: {}", cwd.display());
 
     match action.as_str() {
         "create_code" | "gen_tests" => {
             let spec = spec_content.ok_or("specContent is required for this action")?;
             let prompt = build_prompt(&action, &spec);
 
-            // Write prompt to temp file
             let temp_dir = std::env::temp_dir();
             let temp_path = temp_dir.join(format!("specstudio_prompt_{}.txt", process_id));
 
+            log::info!("Writing prompt to: {}", temp_path.display());
             fs::write(&temp_path, &prompt)
                 .map_err(|e| format!("Failed to write temp prompt file: {}", e))?;
 
-            // Spawn claude process with stdin enabled for interactivity
-            // Use --dangerously-skip-permissions to prevent Claude from hanging
-            // waiting for manual tool approval in headless mode
-            let mut cmd = Command::new("claude");
-            cmd.args(["-p", temp_path.to_str().unwrap(), "--dangerously-skip-permissions"])
-                .current_dir(&cwd)
-                .env("FORCE_COLOR", "0")
-                .env("CI", "true")  // Force non-interactive mode to prevent hanging
-                .stdin(Stdio::piped())   // Enable stdin for interactive input
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped());
+            // Resolve paths
+            let claude_path = resolve_binary_path("claude");
+            let robust_path = get_robust_path_env();
 
-            let mut child = cmd.spawn()
-                .map_err(|e| format!("Failed to spawn claude: {}", e))?;
+            log::info!("Using Claude Binary: {}", claude_path);
+            log::info!("Using PATH Env: {}", robust_path);
 
-            let stdout = child.stdout.take();
-            let stderr = child.stderr.take();
+            // Create PTY system
+            let pty_system = native_pty_system();
+
+            // Create a PTY pair
+            let pty_pair = pty_system
+                .openpty(PtySize {
+                    rows: 24,
+                    cols: 80,
+                    pixel_width: 0,
+                    pixel_height: 0,
+                })
+                .map_err(|e| format!("Failed to create PTY: {}", e))?;
+
+            // Build the command
+            let mut cmd = CommandBuilder::new(&claude_path);
+            cmd.arg("-p");
+            cmd.arg(temp_path.to_str().unwrap());
+            cmd.arg("--dangerously-skip-permissions");
+            cmd.cwd(&cwd);
+            cmd.env("PATH", robust_path);
+            cmd.env("FORCE_COLOR", "1");
+            cmd.env("TERM", "xterm-256color");
+
+            log::info!("Spawning claude via PTY...");
+
+            // Spawn the child process attached to the slave PTY
+            let mut child = pty_pair
+                .slave
+                .spawn_command(cmd)
+                .map_err(|e| {
+                    log::error!("Failed to spawn claude via PTY: {}", e);
+                    format!("Failed to spawn claude: {}", e)
+                })?;
+
+            let child_pid = child.process_id();
+            log::info!("Process spawned successfully. PID: {:?}", child_pid);
+            emit_stream_event(&app, "output", &format!("Process started (PID: {:?})\n", child_pid.unwrap_or(0)));
+
+            // Get the master PTY reader and writer
+            let mut reader = pty_pair.master.try_clone_reader()
+                .map_err(|e| format!("Failed to clone PTY reader: {}", e))?;
+            let writer = pty_pair.master.take_writer()
+                .map_err(|e| format!("Failed to take PTY writer: {}", e))?;
 
             let proc_id = process_id.clone();
-            let (child_handle, _stdin_handle) = registry.register(proc_id.clone(), child);
+            registry.register_pty(proc_id.clone(), writer, child_pid);
 
-            // Spawn thread to read stdout (byte-based, doesn't block on newlines)
-            let app_stdout = app.clone();
-            let stdout_thread = if let Some(stdout) = stdout {
-                Some(thread::spawn(move || {
-                    stream_stdout(stdout, app_stdout);
-                }))
-            } else {
-                None
-            };
+            // Spawn thread to read PTY output and stream to frontend
+            let app_reader = app.clone();
+            let reader_thread = thread::spawn(move || {
+                let mut buffer = [0u8; 4096];
+                loop {
+                    match reader.read(&mut buffer) {
+                        Ok(0) => {
+                            log::info!("PTY reader reached EOF");
+                            break;
+                        }
+                        Ok(n) => {
+                            let text = String::from_utf8_lossy(&buffer[..n]);
+                            log::trace!("PTY OUTPUT: {}", text);
+                            emit_stream_event(&app_reader, "output", &text);
+                        }
+                        Err(e) => {
+                            log::error!("Error reading from PTY: {}", e);
+                            break;
+                        }
+                    }
+                }
+            });
 
-            // Spawn thread to read stderr (byte-based, doesn't block on newlines)
-            let app_stderr = app.clone();
-            let stderr_thread = if let Some(stderr) = stderr {
-                Some(thread::spawn(move || {
-                    stream_stderr(stderr, app_stderr);
-                }))
-            } else {
-                None
-            };
-
-            // Spawn thread to wait for completion
+            // Spawn thread to wait for process exit
             let app_complete = app.clone();
             let temp_path_clone = temp_path.clone();
 
             thread::spawn(move || {
-                // Wait for reader threads
-                if let Some(t) = stdout_thread {
-                    let _ = t.join();
-                }
-                if let Some(t) = stderr_thread {
-                    let _ = t.join();
-                }
+                // Wait for reader thread to finish (indicates process has closed PTY)
+                let _ = reader_thread.join();
 
-                // Get exit code
-                let exit_code = if let Ok(mut guard) = child_handle.lock() {
-                    if let Some(ref mut child) = *guard {
-                        child.wait().map(|s| s.code().unwrap_or(-1)).unwrap_or(-1)
-                    } else {
-                        -1
+                // Wait for the child process to exit
+                let exit_code = match child.wait() {
+                    Ok(status) => status.exit_code(),
+                    Err(e) => {
+                        log::error!("Error waiting for process: {}", e);
+                        1 // Use 1 as error exit code instead of -1
                     }
-                } else {
-                    -1
                 };
 
-                // Cleanup - get registry from app handle inside the thread
-                // Use catch_unwind to handle app shutdown gracefully
+                log::info!("Process {} exited with code {}", proc_id, exit_code);
+
+                // Cleanup
                 if let Ok(registry) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     app_complete.state::<ProcessRegistry>()
                 })) {
                     registry.remove(&proc_id);
                 }
                 let _ = fs::remove_file(&temp_path_clone);
-
-                emit_stream_event(
-                    &app_complete,
-                    "complete",
-                    &format!("Process exited with code {}", exit_code),
-                );
+                emit_stream_event(&app_complete, "complete", &format!("Process exited with code {}", exit_code));
             });
 
-            Ok(SpawnResult {
-                started: true,
-                process_id,
-            })
+            Ok(SpawnResult { started: true, process_id })
+        }
+        
+        "run_tests" | "run_app" => {
+            // Similar logging added to npm commands if needed, 
+            // but sticking to claude focus for now.
+             spawn_npm_command(&app, &registry, &process_id, &cwd, 
+                if action == "run_tests" { &["test"] } else { &["run", "dev"] }
+             )
         }
 
-        "run_tests" => {
-            spawn_npm_command(&app, &registry, &process_id, &cwd, &["test"])
-        }
-
-        "run_app" => {
-            spawn_npm_command(&app, &registry, &process_id, &cwd, &["run", "dev"])
-        }
-
-        _ => {
-            emit_stream_event(&app, "error", &format!("Unknown streaming action: {}", action));
-            Err(format!("Unknown streaming action: {}", action))
-        }
+        _ => Err(format!("Unknown streaming action: {}", action))
     }
 }
 
 fn spawn_npm_command(
     app: &AppHandle,
-    registry: &ProcessRegistry,
+    _registry: &ProcessRegistry,
     process_id: &str,
     cwd: &PathBuf,
     args: &[&str],
 ) -> Result<SpawnResult, String> {
-    let mut cmd = Command::new("npm");
+    let npm_path = resolve_binary_path("npm");
+    let robust_path = get_robust_path_env();
+
+    log::info!("Spawning NPM: {} {:?}", npm_path, args);
+
+    let mut cmd = Command::new(&npm_path);
     cmd.args(args)
         .current_dir(cwd)
+        .env("PATH", robust_path)
         .env("FORCE_COLOR", "0")
-        .stdin(Stdio::piped())   // Enable stdin for interactivity
+        .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
@@ -360,121 +492,76 @@ fn spawn_npm_command(
 
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
-
     let proc_id = process_id.to_string();
-    let (child_handle, _stdin_handle) = registry.register(proc_id.clone(), child);
 
-    // Spawn thread to read stdout (byte-based, doesn't block on newlines)
     let app_stdout = app.clone();
     let stdout_thread = if let Some(stdout) = stdout {
-        Some(thread::spawn(move || {
-            stream_stdout(stdout, app_stdout);
-        }))
-    } else {
-        None
-    };
+        Some(thread::spawn(move || stream_stdout(stdout, app_stdout)))
+    } else { None };
 
-    // Spawn thread to read stderr (byte-based, doesn't block on newlines)
     let app_stderr = app.clone();
     let stderr_thread = if let Some(stderr) = stderr {
-        Some(thread::spawn(move || {
-            stream_stderr(stderr, app_stderr);
-        }))
-    } else {
-        None
-    };
+        Some(thread::spawn(move || stream_stderr(stderr, app_stderr)))
+    } else { None };
 
-    // Spawn thread to wait for completion
     let app_complete = app.clone();
-    let proc_id_clone = proc_id.clone();
-
-    // We need to clone the registry state differently
-    let app_for_registry = app.clone();
 
     thread::spawn(move || {
-        // Wait for reader threads
-        if let Some(t) = stdout_thread {
-            let _ = t.join();
-        }
-        if let Some(t) = stderr_thread {
-            let _ = t.join();
-        }
+        if let Some(t) = stdout_thread { let _ = t.join(); }
+        if let Some(t) = stderr_thread { let _ = t.join(); }
 
-        // Get exit code
-        let exit_code = if let Ok(mut guard) = child_handle.lock() {
-            if let Some(ref mut child) = *guard {
-                child.wait().map(|s| s.code().unwrap_or(-1)).unwrap_or(-1)
-            } else {
+        let exit_code = match child.wait() {
+            Ok(status) => status.code().unwrap_or(-1),
+            Err(e) => {
+                log::error!("Error waiting for npm process: {}", e);
                 -1
             }
-        } else {
-            -1
         };
 
-        // Cleanup - use catch_unwind to handle app shutdown gracefully
-        if let Ok(registry) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            app_for_registry.state::<ProcessRegistry>()
-        })) {
-            registry.remove(&proc_id_clone);
-        }
-
-        emit_stream_event(
-            &app_complete,
-            "complete",
-            &format!("Process exited with code {}", exit_code),
-        );
+        emit_stream_event(&app_complete, "complete", &format!("Process exited with code {}", exit_code));
     });
 
-    Ok(SpawnResult {
-        started: true,
-        process_id: proc_id,
-    })
+    Ok(SpawnResult { started: true, process_id: proc_id })
 }
 
-/// Send input to a running process
 #[tauri::command]
-pub fn send_process_input(
-    app: AppHandle,
-    input: String,
-) -> Result<InputResult, String> {
+pub fn send_process_input(app: AppHandle, input: String) -> Result<InputResult, String> {
     let registry = app.state::<ProcessRegistry>();
+    let process_id = registry.get_active_process_id().ok_or("No active process")?;
 
-    // Get the active process (most recent one)
-    let process_id = registry.get_active_process_id()
-        .ok_or("No active process to send input to")?;
+    log::info!("Sending input to process {}: {}", process_id, input);
 
-    let stdin_handle = registry.get_stdin(&process_id)
-        .ok_or("Process not found")?;
+    let input_with_newline = format!("{}\n", input);
 
-    let mut stdin_guard = stdin_handle.lock()
-        .map_err(|_| "Failed to lock stdin")?;
-
-    if let Some(ref mut stdin) = *stdin_guard {
-        // Write input followed by newline
-        let input_with_newline = format!("{}\n", input);
-        stdin.write_all(input_with_newline.as_bytes())
-            .map_err(|e| format!("Failed to write to stdin: {}", e))?;
-        stdin.flush()
-            .map_err(|e| format!("Failed to flush stdin: {}", e))?;
-
-        // Echo the input to the console so user sees what they typed
-        emit_stream_event(&app, "input", &format!("> {}\n", input));
-
-        Ok(InputResult {
-            success: true,
-            message: "Input sent successfully".to_string(),
-        })
-    } else {
-        Err("Process stdin is not available".to_string())
+    // Try PTY writer first
+    if let Some(writer_handle) = registry.get_pty_writer(&process_id) {
+        let mut writer_guard = writer_handle.lock().map_err(|_| "Failed to lock PTY writer")?;
+        if let Some(ref mut writer) = *writer_guard {
+            writer.write_all(input_with_newline.as_bytes()).map_err(|e| e.to_string())?;
+            writer.flush().map_err(|e| e.to_string())?;
+            emit_stream_event(&app, "input", &format!("> {}\n", input));
+            return Ok(InputResult { success: true, message: "Input sent to PTY".to_string() });
+        }
     }
+
+    // Try stdin writer
+    if let Some(stdin_handle) = registry.get_stdin(&process_id) {
+        let mut stdin_guard = stdin_handle.lock().map_err(|_| "Failed to lock stdin")?;
+        if let Some(ref mut stdin) = *stdin_guard {
+            stdin.write_all(input_with_newline.as_bytes()).map_err(|e| e.to_string())?;
+            stdin.flush().map_err(|e| e.to_string())?;
+            emit_stream_event(&app, "input", &format!("> {}\n", input));
+            return Ok(InputResult { success: true, message: "Input sent to stdin".to_string() });
+        }
+    }
+
+    Err("Process writer unavailable".to_string())
 }
 
 #[tauri::command]
 pub fn cancel_streaming_processes(app: AppHandle) -> CancelResult {
     let registry = app.state::<ProcessRegistry>();
     let killed = registry.kill_all();
-
     log::info!("Cancelled {} streaming processes", killed);
-
     CancelResult { success: true }
 }
