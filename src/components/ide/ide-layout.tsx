@@ -924,12 +924,25 @@ If there are issues, missing requirements, or the diff is incomplete, set approv
 						}
 					} catch (diffErr) {
 						const msg = diffErr instanceof Error ? diffErr.message : String(diffErr)
-						appendConsoleOutput({
-							type: 'error',
-							data: `⚠️ Quality Gate error: ${msg}. Marking as done.`,
-							timestamp: Date.now(),
-						})
+						const isGitRepoError = /not a git repository/i.test(msg)
 
+						if (isGitRepoError) {
+							// Special handling for non-git workspaces - allow continuation
+							appendConsoleOutput({
+								type: 'output',
+								data: '⚠️ Quality Gate skipped: Workspace is not a git repository.',
+								timestamp: Date.now(),
+							})
+						} else {
+							// All other errors - log as error
+							appendConsoleOutput({
+								type: 'error',
+								data: `⚠️ Quality Gate error: ${msg}. Marking as done.`,
+								timestamp: Date.now(),
+							})
+						}
+
+						// Mark ticket as done in both cases (allow user to continue)
 						setDevelopmentPlan((prev) => {
 							if (!prev) return prev
 							const newPlan = { ...prev }
@@ -1077,12 +1090,43 @@ If there are issues, missing requirements, or the diff is incomplete, set approv
 	const handleCancel = useCallback(() => {
 		cancelStream()
 		setLoadingAction(null)
+
+		// Revert any running tickets back to 'todo' status
+		if (developmentPlan) {
+			setDevelopmentPlan((prev) => {
+				if (!prev) return prev
+
+				let hasRunningTickets = false
+				const newPlan = { ...prev }
+				newPlan.phases = prev.phases.map((phase) => ({
+					...phase,
+					tickets: phase.tickets.map((ticket) => {
+						if (ticket.status === 'running') {
+							hasRunningTickets = true
+							return { ...ticket, status: 'todo' }
+						}
+						return ticket
+					}),
+				}))
+
+				if (hasRunningTickets) {
+					appendConsoleOutput({
+						type: 'output',
+						data: '🔄 Reverted running tickets to todo status',
+						timestamp: Date.now(),
+					})
+				}
+
+				return newPlan
+			})
+		}
+
 		appendConsoleOutput({
 			type: 'output',
 			data: 'Operation cancelled',
 			timestamp: Date.now(),
 		})
-	}, [cancelStream, appendConsoleOutput])
+	}, [cancelStream, appendConsoleOutput, developmentPlan, setDevelopmentPlan])
 
 	const handleAddNewWorkspace = async () => {
 		if (!newWorkspacePath.trim()) return
