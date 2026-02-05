@@ -1,5 +1,7 @@
 # SpecStudio
 
+[![CI](https://github.com/techspeque/specstudio/actions/workflows/ci.yml/badge.svg)](https://github.com/techspeque/specstudio/actions/workflows/ci.yml)
+
 AI-powered ISPC (Intent Spec Plan Code) Development IDE for macOS and Linux.
 
 ## Overview
@@ -379,9 +381,20 @@ cargo test test_extract_first_heading -- --nocapture
 cargo test --doc
 ```
 
-### CI/CD Ready
+### CI/CD
 
-Tests run in parallel and complete in ~3 seconds total (500ms frontend, 2-3s backend). Ready for GitHub Actions integration.
+Tests run automatically on every push and pull request via GitHub Actions:
+
+- ✅ Frontend tests (Vitest)
+- ✅ Backend tests (Cargo)
+- ✅ Linting (ESLint)
+- ✅ Rust format check (`cargo fmt`)
+- ✅ Clippy lints (`cargo clippy`)
+- ✅ Build verification
+
+See [.github/workflows/ci.yml](.github/workflows/ci.yml) for the complete workflow configuration.
+
+**Performance:** Tests complete in ~3 seconds total (500ms frontend, 2-3s backend) with caching enabled.
 
 ## Tool Calling Architecture
 
