@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::io::{Read, Write};
 use std::path::PathBuf;
-use std::process::{Child, ChildStdin, ChildStdout, ChildStderr, Command, Stdio};
+use std::process::{ChildStdout, ChildStderr, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH, Duration};
@@ -42,20 +42,13 @@ pub struct CancelResult {
     pub success: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct InputResult {
-    pub success: bool,
-    pub message: String,
-}
-
 // ============================================================================
 // Process Registry
 // ============================================================================
 
+// Simplified to PTY-only (automated execution, no manual input)
 enum ProcessWriter {
     Pty(Arc<Mutex<Option<Box<dyn Write + Send>>>>),
-    Stdin(Arc<Mutex<Option<ChildStdin>>>),
 }
 
 struct ProcessHandle {
@@ -82,36 +75,11 @@ impl ProcessRegistry {
         });
     }
 
-    pub fn register(&self, id: String, mut child: Child) -> Arc<Mutex<Option<ChildStdin>>> {
-        let stdin = child.stdin.take();
-        let child_pid = child.id();
-        let stdin_handle = Arc::new(Mutex::new(stdin));
-
-        self.processes.lock().unwrap().insert(id, ProcessHandle {
-            writer: ProcessWriter::Stdin(stdin_handle.clone()),
-            child_pid: Some(child_pid),
-        });
-
-        // Child is moved here and needs to be kept alive elsewhere
-        // Return stdin handle for the spawn_npm_command to manage
-        stdin_handle
-    }
-
-    pub fn get_stdin(&self, id: &str) -> Option<Arc<Mutex<Option<ChildStdin>>>> {
-        self.processes.lock().unwrap()
-            .get(id)
-            .and_then(|h| match &h.writer {
-                ProcessWriter::Stdin(s) => Some(s.clone()),
-                ProcessWriter::Pty(_) => None,
-            })
-    }
-
     pub fn get_pty_writer(&self, id: &str) -> Option<Arc<Mutex<Option<Box<dyn Write + Send>>>>> {
         self.processes.lock().unwrap()
             .get(id)
             .and_then(|h| match &h.writer {
                 ProcessWriter::Pty(w) => Some(w.clone()),
-                ProcessWriter::Stdin(_) => None,
             })
     }
 
@@ -141,13 +109,6 @@ impl ProcessRegistry {
             }
         }
         killed
-    }
-
-    pub fn get_active_process_id(&self) -> Option<String> {
-        self.processes.lock().unwrap()
-            .keys()
-            .next()
-            .cloned()
     }
 }
 

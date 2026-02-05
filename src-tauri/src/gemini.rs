@@ -124,6 +124,7 @@ struct FunctionCall {
 #[derive(Debug, Deserialize)]
 struct GeminiError {
     message: String,
+    #[allow(dead_code)] // Part of Gemini API response, kept for completeness
     code: Option<i32>,
 }
 
