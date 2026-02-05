@@ -56,9 +56,8 @@ pub fn run() {
             workspace::save_spec,
             workspace::delete_spec,
             workspace::read_workspace_context,
-            // Shell commands
+            // Shell commands (fully automated)
             shell::spawn_streaming_process,
-            shell::send_process_input,
             shell::cancel_streaming_processes,
             // Auth commands
             auth::check_google_oauth_configured,
