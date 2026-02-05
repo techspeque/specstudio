@@ -39,9 +39,12 @@ SpecStudio is a native desktop IDE designed for **Intent** and **Spec-Driven Dev
 
 **UX Polish**
 
-- **Streaming Output** — Real-time console output with interactive input support
+- **Automated Execution** — Fully hands-free ticket execution with Ghost User automation
+- **Streaming Output** — Real-time unbuffered console output via PTY
 - **Persistent Settings** — Gemini API key and model preferences stored locally
 - **Interactive Tour** — Guided onboarding for new users
+- **Factory Reset** — Reset all settings and clear workspace history
+- **Native Context Menu** — Disabled browser right-click for native desktop feel
 - **Manual Git Control** — You decide when to commit (no auto-commits)
 
 ## Tech Stack
@@ -175,9 +178,9 @@ Switch to **📋 Execution Plan** view to see the structured breakdown.
 In the Plan View, click **Execute Plan** to run the next pending ticket. Each ticket:
 
 1. Gets sent to Claude Code with specific requirements
-2. Claude implements the code
-3. Quality gate runs (Gemini reviews the diff)
-4. Ticket marked as done, next ticket starts
+2. Claude implements the code (fully automated, no interaction needed)
+3. Quality gate runs (Gemini reviews the diff, skipped if not a git repository)
+4. Ticket marked as done, next ticket starts automatically
 
 ### 5. Control Bar Actions
 
@@ -194,7 +197,8 @@ The control bar changes based on your current view:
 
 | Action | Description |
 |--------|-------------|
-| **Execute Plan** | Execute next pending ticket sequentially |
+| **Execute Plan** | Execute next pending ticket sequentially (fully automated) |
+| **Cancel** | Stop execution and revert running tickets to 'todo' status |
 | **Run Tests** | Execute tests in your workspace |
 | **Run App** | Start development server in your workspace |
 
@@ -213,9 +217,9 @@ Toggle the **File Explorer** (folder icon in top bar) to:
 - See git status indicators (modified files highlighted)
 - Click files to view diffs in the Diff Viewer
 
-### 7. Interactive Console
+### 7. Automated Execution Console
 
-When Claude Code runs, you can interact with it via the console input at the bottom. Type responses and press Enter to send input to the running process.
+When Claude Code runs, execution is fully automated. The console displays real-time output with a status indicator showing "Automated Execution Running" and "Hands-Free" badge. No manual interaction is needed — the system automatically handles all prompts and permission screens using Ghost User automation.
 
 ## Project Structure
 
@@ -229,7 +233,7 @@ specstudio/
 │   │   ├── auth.rs       # Browser-based OAuth (deprecated)
 │   │   ├── deps.rs       # Dependency checker (claude CLI)
 │   │   ├── gemini.rs     # Gemini API with streaming + tool calling
-│   │   ├── shell.rs      # Process spawning & interactive I/O
+│   │   ├── shell.rs      # PTY-based process spawning with Ghost User automation
 │   │   ├── workspace.rs  # Spec/plan file I/O (.specstudio/specs/)
 │   │   ├── search.rs     # File search (search_files, search_file_names)
 │   │   ├── filetree.rs   # File tree with .gitignore support
@@ -250,7 +254,7 @@ specstudio/
 │   │   │   ├── file-explorer.tsx       # Workspace file browser
 │   │   │   ├── diff-viewer.tsx         # Git diff display
 │   │   │   ├── active-spec-indicator.tsx # Top bar spec display
-│   │   │   ├── output-console.tsx      # Streaming output
+│   │   │   ├── output-console.tsx      # Automated streaming output (read-only)
 │   │   │   ├── settings-dialog.tsx     # Gemini API config
 │   │   │   └── ide-tour.tsx            # Onboarding
 │   │   ├── setup/
@@ -263,7 +267,10 @@ specstudio/
 │   │   ├── use-auth.ts                 # Auth state (deprecated)
 │   │   ├── use-rpc.ts                  # RPC + chat with tool calling
 │   │   ├── use-workspace.ts            # Spec/plan CRUD + persistence
-│   │   └── use-workspace-target.ts     # Workspace selection
+│   │   ├── use-workspace-target.ts     # Workspace selection
+│   │   └── use-global-context-menu.ts  # Global context menu handler
+│   ├── components/providers/
+│   │   └── context-menu-provider.tsx   # Context menu provider wrapper
 │   ├── lib/utils/
 │   │   └── tokens.ts                   # Token estimation
 │   └── types/
@@ -437,7 +444,67 @@ listen('rpc:stream:data', (event) => {
 })
 ```
 
-This enables real-time updates, interactive input, and tool calling without blocking the UI.
+This enables real-time updates, automated execution, and tool calling without blocking the UI.
+
+## Technical Architecture Details
+
+### Automated Execution (Ghost User)
+
+SpecStudio implements fully automated "fire and forget" execution using PTY (pseudo-terminal) and Ghost User automation:
+
+**PTY Architecture:**
+- Uses `portable-pty` crate for unbuffered output streaming
+- Wraps Claude CLI with `script -q /dev/null` for TTY emulation on macOS
+- Small buffers (1024 bytes) ensure low-latency real-time streaming
+- Prevents output buffering issues that occur with piped stdin/stdout
+
+**Ghost User Automation:**
+- Automatically bypasses Claude CLI permission screens
+- Thread spawns after 1.5s, sends DOWN arrow key, waits 200ms, then ENTER
+- Eliminates need for manual user interaction during execution
+- Runs with `--dangerously-skip-permissions` flag
+
+**Benefits:**
+- True "hands-free" execution — start a ticket and walk away
+- No silent buffers or delayed output
+- Fully automated permission handling
+- Real-time console feedback
+
+### Global Context Menu Handler
+
+SpecStudio disables the default browser right-click menu to provide a native desktop application experience:
+
+**Architecture:**
+- `useGlobalContextMenu` hook attaches window-level listener with capture phase
+- `ContextMenuProvider` wraps app at root level (Next.js layout)
+- Extensibility pattern prepared for custom context menus via `data-custom-context-menu` attribute
+
+**Future Extension:**
+Components can opt into custom context menus by adding `data-custom-context-menu="menu-id"` to elements. See `docs/context-menu-architecture.md` for implementation guide.
+
+### Quality Gate Intelligence
+
+Quality gates run after each ticket execution, but intelligently handle edge cases:
+
+**Non-Git Workspaces:**
+- Detects "not a git repository" errors
+- Logs as info message (not error) with ⚠️ indicator
+- Marks ticket as done and continues execution
+- Allows SpecStudio to work in any directory, not just git repos
+
+**Git Workspaces:**
+- Generates diff between last commit and current state
+- Sends diff to Gemini for code review
+- Reviews are logged to console
+- Tickets marked done regardless of review outcome (human decides whether to keep changes)
+
+### Factory Reset
+
+Settings dialog includes a "Factory Reset" option that:
+- Clears all stored settings (API keys, model preferences)
+- Removes workspace history
+- Resets to first-launch state
+- Useful for troubleshooting or switching accounts
 
 ## Troubleshooting
 
@@ -459,6 +526,7 @@ claude --version
 2. Get a new API key from [Google AI Studio](https://aistudio.google.com/apikey) if needed
 3. Check you have selected a valid model in Settings (gemini-2.5-flash or gemini-2.5-pro)
 4. If tool calling hangs, check console for `search_files` errors
+5. Factory reset available in Settings (gear icon) if issues persist
 
 ### Tool Calling Issues
 
