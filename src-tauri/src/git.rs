@@ -284,3 +284,215 @@ pub fn get_staged_diff(
         files_changed,
     })
 }
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::io::Write;
+    use tempfile::TempDir;
+
+    fn init_git_repo(path: &Path) -> Result<(), String> {
+        Command::new("git")
+            .args(["init"])
+            .current_dir(path)
+            .output()
+            .map_err(|e| format!("Failed to init git: {}", e))?;
+
+        // Configure git for testing
+        Command::new("git")
+            .args(["config", "user.email", "test@example.com"])
+            .current_dir(path)
+            .output()
+            .ok();
+
+        Command::new("git")
+            .args(["config", "user.name", "Test User"])
+            .current_dir(path)
+            .output()
+            .ok();
+
+        Ok(())
+    }
+
+    fn create_test_file(dir: &Path, path: &str, content: &str) -> std::io::Result<()> {
+        let full_path = dir.join(path);
+        if let Some(parent) = full_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let mut file = fs::File::create(full_path)?;
+        file.write_all(content.as_bytes())?;
+        Ok(())
+    }
+
+    #[test]
+    fn test_git_status_non_git_repo() {
+        let temp_dir = TempDir::new().unwrap();
+        let dir_path = temp_dir.path().to_string_lossy().to_string();
+
+        let result = git_status(dir_path);
+
+        assert!(result.is_ok());
+        let status = result.unwrap();
+        assert!(!status.is_git_repo);
+        assert!(!status.has_changes);
+        assert!(status.changed_files.is_empty());
+        assert!(status.untracked_files.is_empty());
+    }
+
+    #[test]
+    fn test_git_status_clean_repo() {
+        let temp_dir = TempDir::new().unwrap();
+        let dir_path = temp_dir.path();
+
+        init_git_repo(dir_path).unwrap();
+
+        let result = git_status(dir_path.to_string_lossy().to_string());
+
+        assert!(result.is_ok());
+        let status = result.unwrap();
+        assert!(status.is_git_repo);
+        assert!(!status.has_changes); // Clean repo, no changes
+    }
+
+    #[test]
+    fn test_git_status_with_untracked_files() {
+        let temp_dir = TempDir::new().unwrap();
+        let dir_path = temp_dir.path();
+
+        init_git_repo(dir_path).unwrap();
+        create_test_file(dir_path, "untracked.txt", "content").unwrap();
+
+        let result = git_status(dir_path.to_string_lossy().to_string());
+
+        assert!(result.is_ok());
+        let status = result.unwrap();
+        assert!(status.is_git_repo);
+        assert!(status.has_changes);
+        assert_eq!(status.untracked_files.len(), 1);
+        assert!(status.untracked_files[0].contains("untracked.txt"));
+    }
+
+    #[test]
+    fn test_git_status_with_modified_files() {
+        let temp_dir = TempDir::new().unwrap();
+        let dir_path = temp_dir.path();
+
+        init_git_repo(dir_path).unwrap();
+
+        // Create and commit a file
+        create_test_file(dir_path, "tracked.txt", "original").unwrap();
+        Command::new("git")
+            .args(["add", "."])
+            .current_dir(dir_path)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-m", "initial"])
+            .current_dir(dir_path)
+            .output()
+            .unwrap();
+
+        // Modify the file
+        create_test_file(dir_path, "tracked.txt", "modified").unwrap();
+
+        let result = git_status(dir_path.to_string_lossy().to_string());
+
+        assert!(result.is_ok());
+        let status = result.unwrap();
+        assert!(status.is_git_repo);
+        assert!(status.has_changes);
+        assert_eq!(status.changed_files.len(), 1);
+        assert!(status.changed_files[0].contains("tracked.txt"));
+    }
+
+    #[test]
+    fn test_git_status_nonexistent_directory() {
+        let result = git_status("/nonexistent/path".to_string());
+
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "Working directory does not exist");
+    }
+
+    #[test]
+    fn test_read_file_existing() {
+        let temp_dir = TempDir::new().unwrap();
+        let dir_path = temp_dir.path();
+
+        let content = "test file content";
+        create_test_file(dir_path, "test.txt", content).unwrap();
+
+        let result = read_file(
+            dir_path.to_string_lossy().to_string(),
+            "test.txt".to_string(),
+        );
+
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), content);
+    }
+
+    #[test]
+    fn test_read_file_nonexistent() {
+        let temp_dir = TempDir::new().unwrap();
+        let dir_path = temp_dir.path();
+
+        let result = read_file(
+            dir_path.to_string_lossy().to_string(),
+            "nonexistent.txt".to_string(),
+        );
+
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), ""); // Returns empty string for missing files
+    }
+
+    #[test]
+    fn test_get_staged_diff_not_git_repo() {
+        let temp_dir = TempDir::new().unwrap();
+        let dir_path = temp_dir.path().to_string_lossy().to_string();
+
+        let result = get_staged_diff(dir_path, None);
+
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "Not a git repository");
+    }
+
+    #[test]
+    fn test_git_diff_result_counts_files() {
+        // Create a sample diff output
+        let diff = "diff --git a/file1.txt b/file1.txt\n\
+                    index 1234567..abcdefg 100644\n\
+                    --- a/file1.txt\n\
+                    +++ b/file1.txt\n\
+                    @@ -1,1 +1,1 @@\n\
+                    -old content\n\
+                    +new content\n\
+                    diff --git a/file2.txt b/file2.txt\n\
+                    index 1234567..abcdefg 100644\n\
+                    --- a/file2.txt\n\
+                    +++ b/file2.txt\n\
+                    @@ -1,1 +1,1 @@\n\
+                    -old\n\
+                    +new\n";
+
+        let files_changed = diff.lines()
+            .filter(|line| line.starts_with("diff --git"))
+            .count();
+
+        assert_eq!(files_changed, 2);
+    }
+
+    #[test]
+    fn test_git_revert_non_git_repo() {
+        let temp_dir = TempDir::new().unwrap();
+        let dir_path = temp_dir.path().to_string_lossy().to_string();
+
+        let result = git_revert_all(dir_path);
+
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "Not a git repository");
+    }
+}

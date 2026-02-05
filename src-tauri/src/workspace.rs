@@ -565,3 +565,81 @@ fn extract_date_from_filename(filename: &str) -> Option<String> {
     }
     None
 }
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_extract_first_heading() {
+        let content = "# My Title\n\nSome content";
+        assert_eq!(extract_first_heading(content), Some("My Title".to_string()));
+
+        let content_no_heading = "Just some text\nNo heading here";
+        assert_eq!(extract_first_heading(content_no_heading), None);
+
+        let content_with_spaces = "#    Spaced Title   \n";
+        assert_eq!(extract_first_heading(content_with_spaces), Some("Spaced Title".to_string()));
+
+        let content_h2 = "## Second Level\n";
+        assert_eq!(extract_first_heading(content_h2), None);
+    }
+
+    #[test]
+    fn test_extract_date_from_filename() {
+        assert_eq!(
+            extract_date_from_filename("20260131-feature.md"),
+            Some("2026-01-31".to_string())
+        );
+
+        assert_eq!(
+            extract_date_from_filename("20251225-christmas.md"),
+            Some("2025-12-25".to_string())
+        );
+
+        assert_eq!(extract_date_from_filename("feature.md"), None);
+
+        assert_eq!(extract_date_from_filename("202601-incomplete.md"), None);
+
+        assert_eq!(extract_date_from_filename("notadate-file.md"), None);
+    }
+
+    #[test]
+    fn test_validate_workspace() {
+        // Test empty path
+        let result = validate_workspace("".to_string());
+        assert!(!result.valid);
+        assert_eq!(result.error, Some("Path is required".to_string()));
+
+        // Test relative path (not allowed)
+        let result = validate_workspace("./relative/path".to_string());
+        assert!(!result.valid);
+        assert!(result.error.as_ref().unwrap().contains("must be absolute"));
+
+        // Test that FORBIDDEN_PATHS list is not empty and contains expected paths
+        assert!(FORBIDDEN_PATHS.contains(&"/etc"));
+        assert!(FORBIDDEN_PATHS.contains(&"/usr"));
+    }
+
+    #[test]
+    fn test_excluded_dirs_contains_specstudio() {
+        // CRITICAL: Ensure .specstudio is excluded to prevent AI from reading its own plans
+        assert!(EXCLUDED_DIRS.contains(&".specstudio"));
+    }
+
+    #[test]
+    fn test_max_limits() {
+        // Ensure reasonable limits are set
+        assert_eq!(MAX_FILE_SIZE, 1024 * 1024); // 1MB
+        assert_eq!(MAX_TOTAL_SIZE, 5 * 1024 * 1024); // 5MB
+    }
+
+    #[test]
+    fn test_specs_dir_constant() {
+        assert_eq!(SPECS_DIR, ".specstudio/specs");
+    }
+}
